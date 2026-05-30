@@ -251,29 +251,28 @@ fn openKeyboardDevices() !void {
     // Try /dev/input/event0 through event31
     var path_buf: [32]u8 = undefined;
     for (0..32) |i| {
-        const path = std.fmt.bufPrint(&path_buf, "/dev/input/event{}", .{i}) catch continue;
+        const path = std.fmt.bufPrint(&path_buf, "/dev/input/event{}\x00", .{i}) catch continue;
         const path_z: [*:0]const u8 = @ptrCast(path.ptr);
         const fd = std.c.open(path_z, @bitCast(std.c.O{ .ACCMODE = .RDONLY, .NONBLOCK = true }), @as(c_uint, 0));
         if (fd >= 0) {
-            // Check if this device has EV_KEY capability by trying to check
-            // if it reports keyboard-like keys. We use EVIOCGBIT ioctl.
-            // EVIOCGBIT(EV_KEY, size) = _IOC(_IOC_READ, 'E', 0x20 + EV_KEY, size)
-            // = _IOC(2, 0x45, 0x21, size)
-            // For simplicity, just test if we can read KEY_A bit
-            const KEY_BITS_SIZE = 128; // enough bytes for 1024 bits
+            // Check if this device supports keyboard keys using ioctl EVIOCGBIT.
+            // Use linux syscall directly since the ioctl request number has the
+            // high bit set (direction flag) which overflows c_int.
+            const KEY_BITS_SIZE = 128;
             var key_bits: [KEY_BITS_SIZE]u8 = [_]u8{0} ** KEY_BITS_SIZE;
 
             // EVIOCGBIT(EV_KEY, KEY_BITS_SIZE)
-            // _IOC(2, 'E', 0x21, KEY_BITS_SIZE) = (2<<30) | (KEY_BITS_SIZE<<16) | (0x45<<8) | 0x21
-            const eviocgbit_key: c_ulong = (2 << 30) | (@as(c_ulong, KEY_BITS_SIZE) << 16) | (0x45 << 8) | 0x21;
-            const ioctl_ret = std.c.ioctl(fd, eviocgbit_key, @intFromPtr(&key_bits));
-            if (ioctl_ret >= 0) {
-                // Check if KEY_A (30) is supported — byte 3, bit 6
+            // _IOC(_IOC_READ=2, type='E'=0x45, nr=0x20+EV_KEY=0x21, size=128)
+            const eviocgbit_key: u32 = (2 << 30) | (KEY_BITS_SIZE << 16) | (0x45 << 8) | 0x21;
+            const ioctl_ret = std.os.linux.ioctl(@intCast(fd), eviocgbit_key, @intFromPtr(&key_bits));
+            const ioctl_errno = std.os.linux.E.init(ioctl_ret);
+            if (ioctl_errno == .SUCCESS) {
+                // Check if KEY_A (30) is supported
                 const key_a_byte = KEY_A / 8;
                 const key_a_bit = KEY_A % 8;
                 if (key_bits[key_a_byte] & (@as(u8, 1) << @intCast(key_a_bit)) != 0) {
                     if (evdev_count < MAX_EVDEV_FDS) {
-                        std.debug.print("fulton: opened keyboard device: {s}\n", .{path});
+                        std.debug.print("fulton: opened keyboard device: {s}\n", .{path[0 .. path.len - 1]});
                         evdev_fds[evdev_count] = fd;
                         evdev_count += 1;
                         continue;
