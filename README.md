@@ -131,6 +131,8 @@ void fulton_stop(void);  // signal event loop to exit
 
 A handle with `id == 0` indicates failure.
 
+**Note for apps with an existing run loop:** If your app already runs an event loop (Tauri, Electron, native Cocoa/GTK/Win32 apps), call `fulton_register()` only — skip `fulton_run()`. Your existing run loop will dispatch the hotkey events. `fulton_run()` blocks and is meant for standalone tools that need fulton to provide the event loop.
+
 ### Bun FFI example
 
 ```ts
