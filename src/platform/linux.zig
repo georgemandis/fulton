@@ -50,13 +50,18 @@ var should_stop: std.atomic.Value(bool) = .init(false);
 // ---------------------------------------------------------------------------
 
 fn isWayland() bool {
-    const session = std.c.getenv("XDG_SESSION_TYPE");
-    if (session) |s| {
+    // Check XDG_SESSION_TYPE first
+    if (std.c.getenv("XDG_SESSION_TYPE")) |s| {
         const slice = std.mem.sliceTo(s, 0);
-        return std.mem.eql(u8, slice, "wayland");
+        if (std.mem.eql(u8, slice, "wayland")) return true;
+        if (std.mem.eql(u8, slice, "x11")) return false;
     }
-    // Also check for WAYLAND_DISPLAY
-    return std.c.getenv("WAYLAND_DISPLAY") != null;
+    // Check WAYLAND_DISPLAY (set even under sudo -E)
+    if (std.c.getenv("WAYLAND_DISPLAY") != null) return true;
+    // If DISPLAY is set but not WAYLAND_DISPLAY, assume X11
+    if (std.c.getenv("DISPLAY") != null) return false;
+    // No display info — default to evdev (works everywhere)
+    return true;
 }
 
 // ===========================================================================
@@ -543,14 +548,29 @@ pub fn register(
     const id = next_id;
     next_id += 1;
 
-    // Decide backend on first registration
+    // Decide backend on first registration.
+    // Strategy: try evdev first (works on Wayland, X11, and TTY).
+    // Fall back to X11 XGrabKey if /dev/input is not accessible.
     if (active_backend == .none) {
-        if (isWayland()) {
-            std.debug.print("fulton: Wayland session detected, using evdev backend\n", .{});
+        // Quick check: can we open any /dev/input/event* device?
+        var can_evdev = false;
+        const test_fd = std.c.open("/dev/input/event0", @bitCast(std.c.O{ .ACCMODE = .RDONLY }), @as(c_uint, 0));
+        if (test_fd >= 0) {
+            _ = std.c.close(test_fd);
+            can_evdev = true;
+        }
+
+        if (can_evdev) {
+            std.debug.print("fulton: using evdev backend (/dev/input accessible)\n", .{});
             active_backend = .evdev;
-        } else {
-            std.debug.print("fulton: X11 session detected, using X11 backend\n", .{});
+        } else if (!isWayland()) {
+            std.debug.print("fulton: using X11 backend (no /dev/input access, X11 session)\n", .{});
             active_backend = .x11;
+        } else {
+            std.debug.print("fulton: error: Wayland session but /dev/input not accessible\n", .{});
+            std.debug.print("fulton: add user to 'input' group: sudo usermod -aG input $USER\n", .{});
+            std.debug.print("fulton: (log out and back in for group change to take effect)\n", .{});
+            return HotkeyError.RunLoopFailed;
         }
     }
 
