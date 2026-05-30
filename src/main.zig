@@ -4,6 +4,15 @@ const hotkey = @import("hotkey");
 
 const version = "0.1.0";
 
+// C runtime system() — used on Windows for command execution.
+// On POSIX we use fork/execve instead for non-blocking fire-and-forget.
+const cSystem = if (builtin.os.tag == .windows)
+    struct {
+        extern "c" fn system(command: [*:0]const u8) c_int;
+    }.system
+else
+    undefined;
+
 const Io = std.Io;
 const File = std.Io.File;
 
@@ -126,31 +135,9 @@ pub fn main(init: std.process.Init) !void {
             var ew = stderr_file.writerStreaming(ctx.io_handle, &errbuf);
 
             if (builtin.os.tag == .windows) {
-                // Windows: use CreateProcessA via kernel32
-                // For simplicity, shell out via cmd.exe /C
+                // Windows: shell out via C runtime system()
                 const cmd_z: [*:0]const u8 = @ptrCast(ctx.command.ptr);
-                var si: std.os.windows.STARTUPINFOW = std.mem.zeroes(std.os.windows.STARTUPINFOW);
-                si.cb = @sizeOf(std.os.windows.STARTUPINFOW);
-                var pi: std.os.windows.PROCESS_INFORMATION = std.mem.zeroes(std.os.windows.PROCESS_INFORMATION);
-                // Build command line: cmd.exe /C "command"
-                var cmd_buf: [4096]u8 = undefined;
-                const cmd_line = std.fmt.bufPrintZ(&cmd_buf, "cmd.exe /C {s}", .{cmd_z}) catch {
-                    ew.interface.print("Error: command too long\n", .{}) catch {};
-                    ew.interface.flush() catch {};
-                    return;
-                };
-                _ = std.os.windows.kernel32.CreateProcessA(
-                    null,
-                    cmd_line.ptr,
-                    null,
-                    null,
-                    0,
-                    0,
-                    null,
-                    null,
-                    @ptrCast(&si),
-                    &pi,
-                );
+                _ = cSystem(cmd_z);
             } else {
                 // POSIX: fork and exec via /bin/sh -c
                 const argv = [_]?[*:0]const u8{
