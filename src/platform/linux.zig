@@ -285,13 +285,21 @@ var portal_session_handle_len: usize = 0;
 var portal_monitor_pid: std.c.pid_t = 0;
 var portal_monitor_fd: std.posix.fd_t = -1;
 
-fn buildTriggerString(mods: hotkey.Modifier, key: hotkey.Key, buf: []u8) ![]const u8 {
-    var stream = std.io.fixedBufferStream(buf);
-    const w = stream.writer();
-    if (mods.ctrl) try w.writeAll("<Control>");
-    if (mods.shift) try w.writeAll("<Shift>");
-    if (mods.alt) try w.writeAll("<Alt>");
-    if (mods.cmd) try w.writeAll("<Super>");
+fn buildTriggerString(mods: hotkey.Modifier, key: hotkey.Key, buf: []u8) ?[]const u8 {
+    var pos: usize = 0;
+    const parts = [_]struct { flag: bool, str: []const u8 }{
+        .{ .flag = mods.ctrl, .str = "<Control>" },
+        .{ .flag = mods.shift, .str = "<Shift>" },
+        .{ .flag = mods.alt, .str = "<Alt>" },
+        .{ .flag = mods.cmd, .str = "<Super>" },
+    };
+    for (parts) |part| {
+        if (part.flag) {
+            if (pos + part.str.len > buf.len) return null;
+            @memcpy(buf[pos..][0..part.str.len], part.str);
+            pos += part.str.len;
+        }
+    }
     const key_name: []const u8 = switch (key) {
         .a => "a", .b => "b", .c => "c", .d => "d", .e => "e",
         .f => "f", .g => "g", .h => "h", .i => "i", .j => "j",
@@ -309,8 +317,10 @@ fn buildTriggerString(mods: hotkey.Modifier, key: hotkey.Key, buf: []u8) ![]cons
         .up => "Up", .down => "Down", .left => "Left", .right => "Right",
         .home => "Home", .end => "End", .page_up => "Page_Up", .page_down => "Page_Down",
     };
-    try w.writeAll(key_name);
-    return stream.getWritten();
+    if (pos + key_name.len > buf.len) return null;
+    @memcpy(buf[pos..][0..key_name.len], key_name);
+    pos += key_name.len;
+    return buf[0..pos];
 }
 
 fn runGdbus(argv: []const ?[*:0]const u8, out_buf: []u8) ?[]const u8 {
@@ -412,30 +422,36 @@ fn portalCreateSession() !void {
 
 fn portalBindShortcuts() !void {
     var shortcuts_arg_buf: [2048]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&shortcuts_arg_buf);
-    const w = stream.writer();
+    var pos: usize = 0;
 
-    w.writeAll("[") catch return HotkeyError.RegistrationFailed;
+    shortcuts_arg_buf[0] = '[';
+    pos = 1;
+
     var first = true;
     for (&registrations) |*slot| {
         if (slot.*) |reg| {
-            if (!first) w.writeAll(", ") catch return HotkeyError.RegistrationFailed;
+            if (!first) {
+                if (pos + 2 > shortcuts_arg_buf.len) return HotkeyError.RegistrationFailed;
+                @memcpy(shortcuts_arg_buf[pos..][0..2], ", ");
+                pos += 2;
+            }
             first = false;
 
             var trigger_buf: [128]u8 = undefined;
-            const trigger = buildTriggerString(reg.modifiers, reg.key, &trigger_buf) catch
+            const trigger = buildTriggerString(reg.modifiers, reg.key, &trigger_buf) orelse
                 return HotkeyError.RegistrationFailed;
 
-            w.print("('fulton-{d}', {{'description': <'Fulton hotkey {d}'>, 'preferred_trigger': <'{s}'>}})", .{
+            const entry = std.fmt.bufPrint(shortcuts_arg_buf[pos..], "('fulton-{d}', {{'description': <'Fulton hotkey {d}'>, 'preferred_trigger': <'{s}'>}})", .{
                 reg.id, reg.id, trigger,
             }) catch return HotkeyError.RegistrationFailed;
+            pos += entry.len;
         }
     }
-    w.writeAll("]") catch return HotkeyError.RegistrationFailed;
 
-    const shortcuts_written = stream.getWritten();
-    if (shortcuts_written.len >= shortcuts_arg_buf.len) return HotkeyError.RegistrationFailed;
-    shortcuts_arg_buf[shortcuts_written.len] = 0;
+    if (pos + 1 >= shortcuts_arg_buf.len) return HotkeyError.RegistrationFailed;
+    shortcuts_arg_buf[pos] = ']';
+    pos += 1;
+    shortcuts_arg_buf[pos] = 0;
 
     const session_path_z = blk: {
         if (portal_session_handle_len >= portal_session_handle.len) return HotkeyError.RegistrationFailed;
@@ -539,7 +555,7 @@ fn portalRun() !void {
         }
     }
 
-    _ = std.c.kill(portal_monitor_pid, 15);
+    _ = std.c.kill(portal_monitor_pid, .TERM);
     _ = std.c.close(portal_monitor_fd);
     var status: c_int = 0;
     _ = std.c.waitpid(portal_monitor_pid, &status, 0);
@@ -607,19 +623,19 @@ var x11_lib: ?*anyopaque = null;
 fn loadX11() bool {
     if (x11_fns != null) return true;
 
-    const handle = std.c.dlopen("libX11.so.6", 0x00001) orelse // RTLD_LAZY
-        std.c.dlopen("libX11.so", 0x00001) orelse
+    const handle = std.c.dlopen("libX11.so.6", .{ .LAZY = true }) orelse
+        std.c.dlopen("libX11.so", .{ .LAZY = true }) orelse
         return false;
 
     x11_fns = .{
-        .XOpenDisplay = @ptrCast(std.c.dlsym(handle, "XOpenDisplay") orelse return false),
-        .XCloseDisplay = @ptrCast(std.c.dlsym(handle, "XCloseDisplay") orelse return false),
-        .XDefaultRootWindow = @ptrCast(std.c.dlsym(handle, "XDefaultRootWindow") orelse return false),
-        .XKeysymToKeycode = @ptrCast(std.c.dlsym(handle, "XKeysymToKeycode") orelse return false),
-        .XGrabKey = @ptrCast(std.c.dlsym(handle, "XGrabKey") orelse return false),
-        .XUngrabKey = @ptrCast(std.c.dlsym(handle, "XUngrabKey") orelse return false),
-        .XNextEvent = @ptrCast(std.c.dlsym(handle, "XNextEvent") orelse return false),
-        .XSync = @ptrCast(std.c.dlsym(handle, "XSync") orelse return false),
+        .XOpenDisplay = @ptrCast(@alignCast(std.c.dlsym(handle, "XOpenDisplay") orelse return false)),
+        .XCloseDisplay = @ptrCast(@alignCast(std.c.dlsym(handle, "XCloseDisplay") orelse return false)),
+        .XDefaultRootWindow = @ptrCast(@alignCast(std.c.dlsym(handle, "XDefaultRootWindow") orelse return false)),
+        .XKeysymToKeycode = @ptrCast(@alignCast(std.c.dlsym(handle, "XKeysymToKeycode") orelse return false)),
+        .XGrabKey = @ptrCast(@alignCast(std.c.dlsym(handle, "XGrabKey") orelse return false)),
+        .XUngrabKey = @ptrCast(@alignCast(std.c.dlsym(handle, "XUngrabKey") orelse return false)),
+        .XNextEvent = @ptrCast(@alignCast(std.c.dlsym(handle, "XNextEvent") orelse return false)),
+        .XSync = @ptrCast(@alignCast(std.c.dlsym(handle, "XSync") orelse return false)),
     };
     x11_lib = handle;
     return true;
