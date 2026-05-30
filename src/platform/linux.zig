@@ -589,14 +589,41 @@ const Mod3Mask: c_uint = 1 << 5;
 const Mod4Mask: c_uint = 1 << 6;
 const GrabModeAsync: c_int = 1;
 
-extern "X11" fn XOpenDisplay(display_name: ?[*:0]const u8) ?*Display;
-extern "X11" fn XCloseDisplay(display: *Display) c_int;
-extern "X11" fn XDefaultRootWindow(display: *Display) Window_;
-extern "X11" fn XKeysymToKeycode(display: *Display, keysym: KeySym) KeyCode_;
-extern "X11" fn XGrabKey(display: *Display, keycode: c_int, modifiers: c_uint, grab_window: Window_, owner_events: c_int, pointer_mode: c_int, keyboard_mode: c_int) c_int;
-extern "X11" fn XUngrabKey(display: *Display, keycode: c_int, modifiers: c_uint, grab_window: Window_) c_int;
-extern "X11" fn XNextEvent(display: *Display, event_return: *XEvent) c_int;
-extern "X11" fn XSync(display: *Display, discard: c_int) c_int;
+// X11 function pointers loaded at runtime via dlopen
+const X11Fns = struct {
+    XOpenDisplay: *const fn (?[*:0]const u8) callconv(.c) ?*Display,
+    XCloseDisplay: *const fn (*Display) callconv(.c) c_int,
+    XDefaultRootWindow: *const fn (*Display) callconv(.c) Window_,
+    XKeysymToKeycode: *const fn (*Display, KeySym) callconv(.c) KeyCode_,
+    XGrabKey: *const fn (*Display, c_int, c_uint, Window_, c_int, c_int, c_int) callconv(.c) c_int,
+    XUngrabKey: *const fn (*Display, c_int, c_uint, Window_) callconv(.c) c_int,
+    XNextEvent: *const fn (*Display, *XEvent) callconv(.c) c_int,
+    XSync: *const fn (*Display, c_int) callconv(.c) c_int,
+};
+
+var x11_fns: ?X11Fns = null;
+var x11_lib: ?*anyopaque = null;
+
+fn loadX11() bool {
+    if (x11_fns != null) return true;
+
+    const handle = std.c.dlopen("libX11.so.6", 0x00001) orelse // RTLD_LAZY
+        std.c.dlopen("libX11.so", 0x00001) orelse
+        return false;
+
+    x11_fns = .{
+        .XOpenDisplay = @ptrCast(std.c.dlsym(handle, "XOpenDisplay") orelse return false),
+        .XCloseDisplay = @ptrCast(std.c.dlsym(handle, "XCloseDisplay") orelse return false),
+        .XDefaultRootWindow = @ptrCast(std.c.dlsym(handle, "XDefaultRootWindow") orelse return false),
+        .XKeysymToKeycode = @ptrCast(std.c.dlsym(handle, "XKeysymToKeycode") orelse return false),
+        .XGrabKey = @ptrCast(std.c.dlsym(handle, "XGrabKey") orelse return false),
+        .XUngrabKey = @ptrCast(std.c.dlsym(handle, "XUngrabKey") orelse return false),
+        .XNextEvent = @ptrCast(std.c.dlsym(handle, "XNextEvent") orelse return false),
+        .XSync = @ptrCast(std.c.dlsym(handle, "XSync") orelse return false),
+    };
+    x11_lib = handle;
+    return true;
+}
 
 var x11_display: ?*Display = null;
 var x11_root: Window_ = 0;
@@ -658,22 +685,24 @@ const lock_masks = [_]c_uint{
 };
 
 fn x11Register(modifiers: hotkey.Modifier, key: hotkey.Key, idx: usize, id: u32, callback: HotkeyCallback, userdata: ?*anyopaque) !void {
+    const fns = x11_fns orelse return HotkeyError.RunLoopFailed;
+
     if (x11_display == null) {
-        x11_display = XOpenDisplay(null) orelse return HotkeyError.RunLoopFailed;
-        x11_root = XDefaultRootWindow(x11_display.?);
+        x11_display = fns.XOpenDisplay(null) orelse return HotkeyError.RunLoopFailed;
+        x11_root = fns.XDefaultRootWindow(x11_display.?);
     }
     const dpy = x11_display.?;
 
     const keysym = keyToKeySym(key);
-    const keycode = XKeysymToKeycode(dpy, keysym);
+    const keycode = fns.XKeysymToKeycode(dpy, keysym);
     const x11_mods = modsToX11Mask(modifiers);
 
     if (keycode == 0) return HotkeyError.RegistrationFailed;
 
     for (lock_masks) |lock| {
-        _ = XGrabKey(dpy, @intCast(keycode), x11_mods | lock, x11_root, 0, GrabModeAsync, GrabModeAsync);
+        _ = fns.XGrabKey(dpy, @intCast(keycode), x11_mods | lock, x11_root, 0, GrabModeAsync, GrabModeAsync);
     }
-    _ = XSync(dpy, 0);
+    _ = fns.XSync(dpy, 0);
 
     registrations[idx] = .{
         .id = id, .modifiers = modifiers, .key = key,
@@ -683,6 +712,7 @@ fn x11Register(modifiers: hotkey.Modifier, key: hotkey.Key, idx: usize, id: u32,
 }
 
 fn x11Run() !void {
+    const fns = x11_fns orelse return HotkeyError.RunLoopFailed;
     if (x11_display == null) return HotkeyError.RunLoopFailed;
     const dpy = x11_display.?;
 
@@ -690,7 +720,7 @@ fn x11Run() !void {
 
     while (!should_stop.load(.acquire)) {
         var event: XEvent = undefined;
-        _ = XNextEvent(dpy, &event);
+        _ = fns.XNextEvent(dpy, &event);
 
         if (event.type == KeyPress_) {
             const key_event: *const XKeyEvent = @ptrCast(&event);
@@ -746,7 +776,7 @@ pub fn register(
             };
         }
 
-        if (active_backend == .none and !isWayland()) {
+        if (active_backend == .none and !isWayland() and loadX11()) {
             active_backend = .x11;
         }
 
@@ -781,9 +811,11 @@ pub fn unregister(handle: HotkeyHandle) void {
         if (slot.*) |reg| {
             if (reg.id == handle.id) {
                 if (active_backend == .x11) {
-                    if (x11_display) |dpy| {
-                        for (lock_masks) |lock| {
-                            _ = XUngrabKey(dpy, @intCast(reg.x11_keycode), reg.x11_mods | lock, x11_root);
+                    if (x11_fns) |fns| {
+                        if (x11_display) |dpy| {
+                            for (lock_masks) |lock| {
+                                _ = fns.XUngrabKey(dpy, @intCast(reg.x11_keycode), reg.x11_mods | lock, x11_root);
+                            }
                         }
                     }
                 }

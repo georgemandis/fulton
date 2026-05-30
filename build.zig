@@ -31,12 +31,6 @@ pub fn build(b: *std.Build) void {
         },
         .linux => {
             hotkey_mod.link_libc = true;
-            if (!is_native) {
-                hotkey_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
-                hotkey_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
-                hotkey_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-            }
-            hotkey_mod.linkSystemLibrary("X11", .{});
         },
         .windows => {
             hotkey_mod.link_libc = true;
