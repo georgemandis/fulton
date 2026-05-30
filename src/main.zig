@@ -125,28 +125,54 @@ pub fn main(init: std.process.Init) !void {
             var errbuf: [256]u8 = undefined;
             var ew = stderr_file.writerStreaming(ctx.io_handle, &errbuf);
 
-            // Fork and exec the command via /bin/sh -c
-            const argv = [_]?[*:0]const u8{
-                "/bin/sh",
-                "-c",
-                @ptrCast(ctx.command.ptr),
-                null,
-            };
-
-            const pid = std.c.fork();
-            if (pid == 0) {
-                // Child process
-                _ = std.c.execve(
-                    "/bin/sh",
-                    @ptrCast(&argv),
-                    @ptrCast(std.c.environ),
+            if (builtin.os.tag == .windows) {
+                // Windows: use CreateProcessA via kernel32
+                // For simplicity, shell out via cmd.exe /C
+                const cmd_z: [*:0]const u8 = @ptrCast(ctx.command.ptr);
+                var si: std.os.windows.STARTUPINFOW = std.mem.zeroes(std.os.windows.STARTUPINFOW);
+                si.cb = @sizeOf(std.os.windows.STARTUPINFOW);
+                var pi: std.os.windows.PROCESS_INFORMATION = std.mem.zeroes(std.os.windows.PROCESS_INFORMATION);
+                // Build command line: cmd.exe /C "command"
+                var cmd_buf: [4096]u8 = undefined;
+                const cmd_line = std.fmt.bufPrintZ(&cmd_buf, "cmd.exe /C {s}", .{cmd_z}) catch {
+                    ew.interface.print("Error: command too long\n", .{}) catch {};
+                    ew.interface.flush() catch {};
+                    return;
+                };
+                _ = std.os.windows.kernel32.CreateProcessA(
+                    null,
+                    cmd_line.ptr,
+                    null,
+                    null,
+                    0,
+                    0,
+                    null,
+                    null,
+                    @ptrCast(&si),
+                    &pi,
                 );
-                std.process.exit(127);
-            } else if (pid < 0) {
-                ew.interface.print("Error: failed to fork\n", .{}) catch {};
-                ew.interface.flush() catch {};
+            } else {
+                // POSIX: fork and exec via /bin/sh -c
+                const argv = [_]?[*:0]const u8{
+                    "/bin/sh",
+                    "-c",
+                    @ptrCast(ctx.command.ptr),
+                    null,
+                };
+
+                const pid = std.c.fork();
+                if (pid == 0) {
+                    _ = std.c.execve(
+                        "/bin/sh",
+                        @ptrCast(&argv),
+                        @ptrCast(std.c.environ),
+                    );
+                    std.process.exit(127);
+                } else if (pid < 0) {
+                    ew.interface.print("Error: failed to fork\n", .{}) catch {};
+                    ew.interface.flush() catch {};
+                }
             }
-            // Parent continues — don't wait, fire and forget
         }
     };
 
