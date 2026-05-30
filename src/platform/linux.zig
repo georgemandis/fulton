@@ -2,7 +2,7 @@ const std = @import("std");
 const hotkey = @import("../hotkey.zig");
 
 // ---------------------------------------------------------------------------
-// Public types (shared by both backends)
+// Public types (shared by all backends)
 // ---------------------------------------------------------------------------
 
 pub const HotkeyError = error{
@@ -35,7 +35,6 @@ const Registration = struct {
     key: hotkey.Key,
     callback: HotkeyCallback,
     userdata: ?*anyopaque,
-    // X11-specific (only used when X11 backend is active)
     x11_keycode: u8,
     x11_mods: c_uint,
 };
@@ -50,17 +49,13 @@ var should_stop: std.atomic.Value(bool) = .init(false);
 // ---------------------------------------------------------------------------
 
 fn isWayland() bool {
-    // Check XDG_SESSION_TYPE first
     if (std.c.getenv("XDG_SESSION_TYPE")) |s| {
         const slice = std.mem.sliceTo(s, 0);
         if (std.mem.eql(u8, slice, "wayland")) return true;
         if (std.mem.eql(u8, slice, "x11")) return false;
     }
-    // Check WAYLAND_DISPLAY (set even under sudo -E)
     if (std.c.getenv("WAYLAND_DISPLAY") != null) return true;
-    // If DISPLAY is set but not WAYLAND_DISPLAY, assume X11
     if (std.c.getenv("DISPLAY") != null) return false;
-    // No display info — default to evdev (works everywhere)
     return true;
 }
 
@@ -68,9 +63,7 @@ fn isWayland() bool {
 // evdev backend — works on Wayland, X11, and TTY
 // ===========================================================================
 
-// Linux input event structures and constants
 const EV_KEY: u16 = 0x01;
-const EV_SYN: u16 = 0x00;
 
 const InputEvent = extern struct {
     tv_sec: isize,
@@ -152,76 +145,25 @@ const KEY_END: u16 = 107;
 const KEY_PAGEUP: u16 = 104;
 const KEY_PAGEDOWN: u16 = 109;
 
-// ioctl constants for evdev
-const EVIOCGBIT = 0x80404520; // EVIOCGBIT(0, sizeof(long))
-// For checking EV_KEY capability, we use EVIOCGBIT(EV_KEY, KEY_MAX/8)
-// But simpler: just try to read events and check if keyboard-like keys appear.
-// Actually, let's use the /sys/class/input approach to find keyboards.
-
 fn keyToEvdev(key: hotkey.Key) u16 {
     return switch (key) {
-        .a => KEY_A,
-        .b => KEY_B,
-        .c => KEY_C,
-        .d => KEY_D,
-        .e => KEY_E,
-        .f => KEY_F,
-        .g => KEY_G,
-        .h => KEY_H,
-        .i => KEY_I,
-        .j => KEY_J,
-        .k => KEY_K,
-        .l => KEY_L,
-        .m => KEY_M,
-        .n => KEY_N,
-        .o => KEY_O,
-        .p => KEY_P,
-        .q => KEY_Q,
-        .r => KEY_R,
-        .s => KEY_S,
-        .t => KEY_T,
-        .u => KEY_U,
-        .v => KEY_V,
-        .w => KEY_W,
-        .x => KEY_X,
-        .y => KEY_Y,
-        .z => KEY_Z,
-        .@"0" => KEY_0,
-        .@"1" => KEY_1,
-        .@"2" => KEY_2,
-        .@"3" => KEY_3,
-        .@"4" => KEY_4,
-        .@"5" => KEY_5,
-        .@"6" => KEY_6,
-        .@"7" => KEY_7,
-        .@"8" => KEY_8,
-        .@"9" => KEY_9,
-        .f1 => KEY_F1,
-        .f2 => KEY_F2,
-        .f3 => KEY_F3,
-        .f4 => KEY_F4,
-        .f5 => KEY_F5,
-        .f6 => KEY_F6,
-        .f7 => KEY_F7,
-        .f8 => KEY_F8,
-        .f9 => KEY_F9,
-        .f10 => KEY_F10,
-        .f11 => KEY_F11,
-        .f12 => KEY_F12,
-        .space => KEY_SPACE,
-        .@"return" => KEY_ENTER,
-        .tab => KEY_TAB,
-        .escape => KEY_ESC,
-        .backspace => KEY_BACKSPACE,
-        .delete => KEY_DELETE,
-        .up => KEY_UP,
-        .down => KEY_DOWN,
-        .left => KEY_LEFT,
-        .right => KEY_RIGHT,
-        .home => KEY_HOME,
-        .end => KEY_END,
-        .page_up => KEY_PAGEUP,
-        .page_down => KEY_PAGEDOWN,
+        .a => KEY_A, .b => KEY_B, .c => KEY_C, .d => KEY_D,
+        .e => KEY_E, .f => KEY_F, .g => KEY_G, .h => KEY_H,
+        .i => KEY_I, .j => KEY_J, .k => KEY_K, .l => KEY_L,
+        .m => KEY_M, .n => KEY_N, .o => KEY_O, .p => KEY_P,
+        .q => KEY_Q, .r => KEY_R, .s => KEY_S, .t => KEY_T,
+        .u => KEY_U, .v => KEY_V, .w => KEY_W, .x => KEY_X,
+        .y => KEY_Y, .z => KEY_Z,
+        .@"0" => KEY_0, .@"1" => KEY_1, .@"2" => KEY_2,
+        .@"3" => KEY_3, .@"4" => KEY_4, .@"5" => KEY_5,
+        .@"6" => KEY_6, .@"7" => KEY_7, .@"8" => KEY_8, .@"9" => KEY_9,
+        .f1 => KEY_F1, .f2 => KEY_F2, .f3 => KEY_F3, .f4 => KEY_F4,
+        .f5 => KEY_F5, .f6 => KEY_F6, .f7 => KEY_F7, .f8 => KEY_F8,
+        .f9 => KEY_F9, .f10 => KEY_F10, .f11 => KEY_F11, .f12 => KEY_F12,
+        .space => KEY_SPACE, .@"return" => KEY_ENTER, .tab => KEY_TAB,
+        .escape => KEY_ESC, .backspace => KEY_BACKSPACE, .delete => KEY_DELETE,
+        .up => KEY_UP, .down => KEY_DOWN, .left => KEY_LEFT, .right => KEY_RIGHT,
+        .home => KEY_HOME, .end => KEY_END, .page_up => KEY_PAGEUP, .page_down => KEY_PAGEDOWN,
     };
 }
 
@@ -232,7 +174,6 @@ fn isModifierKey(code: u16) bool {
         code == KEY_LEFTMETA or code == KEY_RIGHTMETA;
 }
 
-// Track current modifier state
 var mod_ctrl: bool = false;
 var mod_shift: bool = false;
 var mod_alt: bool = false;
@@ -253,10 +194,6 @@ var evdev_fds: [MAX_EVDEV_FDS]std.posix.fd_t = [_]std.posix.fd_t{-1} ** MAX_EVDE
 var evdev_count: usize = 0;
 
 fn openInputDevices() !void {
-    // Open all /dev/input/event* devices we have permission to read.
-    // We don't filter by capability — the event loop just ignores
-    // non-keyboard events (mice, touchpads, etc). This avoids fragile
-    // ioctl calls that vary across kernel/libc/Zig versions.
     var path_buf: [32]u8 = undefined;
     for (0..32) |i| {
         const path = std.fmt.bufPrint(&path_buf, "/dev/input/event{}\x00", .{i}) catch continue;
@@ -264,7 +201,6 @@ fn openInputDevices() !void {
         const fd = std.c.open(path_z, @bitCast(std.c.O{ .ACCMODE = .RDONLY, .NONBLOCK = true }), @as(c_uint, 0));
         if (fd >= 0) {
             if (evdev_count < MAX_EVDEV_FDS) {
-                std.debug.print("fulton: opened input device: /dev/input/event{}\n", .{i});
                 evdev_fds[evdev_count] = fd;
                 evdev_count += 1;
             } else {
@@ -274,8 +210,6 @@ fn openInputDevices() !void {
     }
 
     if (evdev_count == 0) {
-        std.debug.print("fulton: no input devices found in /dev/input/\n", .{});
-        std.debug.print("fulton: ensure user is in 'input' group: sudo usermod -aG input $USER\n", .{});
         return HotkeyError.RunLoopFailed;
     }
 }
@@ -284,9 +218,7 @@ fn evdevRun() !void {
     try openInputDevices();
 
     should_stop.store(false, .release);
-    std.debug.print("fulton: entering evdev event loop ({} device(s))\n", .{evdev_count});
 
-    // Build pollfd array
     var pollfds: [MAX_EVDEV_FDS]std.c.pollfd = undefined;
     for (0..evdev_count) |i| {
         pollfds[i] = .{
@@ -297,13 +229,12 @@ fn evdevRun() !void {
     }
 
     while (!should_stop.load(.acquire)) {
-        const poll_ret = std.c.poll(&pollfds, @intCast(evdev_count), 500); // 500ms timeout
+        const poll_ret = std.c.poll(&pollfds, @intCast(evdev_count), 500);
         if (poll_ret <= 0) continue;
 
         for (0..evdev_count) |i| {
             if ((pollfds[i].revents & std.c.POLL.IN) == 0) continue;
 
-            // Read all available events from this device
             while (true) {
                 var ev: InputEvent = undefined;
                 const bytes_read = std.c.read(evdev_fds[i], @ptrCast(&ev), @sizeOf(InputEvent));
@@ -311,34 +242,23 @@ fn evdevRun() !void {
 
                 if (ev.type != EV_KEY) continue;
 
-                const pressed = ev.value == 1; // 1 = press, 0 = release, 2 = repeat
+                const pressed = ev.value == 1;
 
-                // Update modifier state
                 if (isModifierKey(ev.code)) {
                     updateModState(ev.code, pressed or ev.value == 2);
                     continue;
                 }
 
-                // Only fire on key press (not repeat or release)
                 if (!pressed) continue;
 
-                std.debug.print("fulton: key code={}, ctrl={}, shift={}, alt={}, super={}\n", .{
-                    ev.code, mod_ctrl, mod_shift, mod_alt, mod_super,
-                });
-
-                // Check against registrations
                 for (&registrations) |*slot| {
                     if (slot.*) |reg| {
                         const expected_evdev = keyToEvdev(reg.key);
                         if (ev.code != expected_evdev) continue;
-
-                        // Check modifiers
                         if (reg.modifiers.ctrl != mod_ctrl) continue;
                         if (reg.modifiers.shift != mod_shift) continue;
                         if (reg.modifiers.alt != mod_alt) continue;
                         if (reg.modifiers.cmd != mod_super) continue;
-
-                        std.debug.print("fulton: evdev match! firing callback\n", .{});
                         reg.callback(reg.userdata);
                         break;
                     }
@@ -347,7 +267,6 @@ fn evdevRun() !void {
         }
     }
 
-    // Close all fds
     for (0..evdev_count) |i| {
         _ = std.c.close(evdev_fds[i]);
         evdev_fds[i] = -1;
@@ -366,7 +285,6 @@ var portal_session_handle_len: usize = 0;
 var portal_monitor_pid: std.c.pid_t = 0;
 var portal_monitor_fd: std.posix.fd_t = -1;
 
-/// Build the trigger string for BindShortcuts (e.g. "<Control><Shift>9")
 fn buildTriggerString(mods: hotkey.Modifier, key: hotkey.Key, buf: []u8) ![]const u8 {
     var stream = std.io.fixedBufferStream(buf);
     const w = stream.writer();
@@ -374,7 +292,6 @@ fn buildTriggerString(mods: hotkey.Modifier, key: hotkey.Key, buf: []u8) ![]cons
     if (mods.shift) try w.writeAll("<Shift>");
     if (mods.alt) try w.writeAll("<Alt>");
     if (mods.cmd) try w.writeAll("<Super>");
-    // Key name — portal uses XKB names
     const key_name: []const u8 = switch (key) {
         .a => "a", .b => "b", .c => "c", .d => "d", .e => "e",
         .f => "f", .g => "g", .h => "h", .i => "i", .j => "j",
@@ -396,9 +313,7 @@ fn buildTriggerString(mods: hotkey.Modifier, key: hotkey.Key, buf: []u8) ![]cons
     return stream.getWritten();
 }
 
-/// Run a gdbus command and return its stdout output
 fn runGdbus(argv: []const ?[*:0]const u8, out_buf: []u8) ?[]const u8 {
-    // Create a pipe for stdout
     var pipe_fds: [2]c_int = undefined;
     if (std.c.pipe(&pipe_fds) != 0) return null;
 
@@ -410,11 +325,9 @@ fn runGdbus(argv: []const ?[*:0]const u8, out_buf: []u8) ?[]const u8 {
     }
 
     if (pid == 0) {
-        // Child: redirect stdout to pipe write end
         _ = std.c.close(pipe_fds[0]);
-        _ = std.c.dup2(pipe_fds[1], 1); // stdout
+        _ = std.c.dup2(pipe_fds[1], 1);
         _ = std.c.close(pipe_fds[1]);
-        // Suppress stderr
         const dev_null = std.c.open("/dev/null", @bitCast(std.c.O{ .ACCMODE = .WRONLY }), @as(c_uint, 0));
         if (dev_null >= 0) {
             _ = std.c.dup2(dev_null, 2);
@@ -428,7 +341,6 @@ fn runGdbus(argv: []const ?[*:0]const u8, out_buf: []u8) ?[]const u8 {
         std.process.exit(127);
     }
 
-    // Parent: read from pipe
     _ = std.c.close(pipe_fds[1]);
     var total: usize = 0;
     while (total < out_buf.len) {
@@ -438,7 +350,6 @@ fn runGdbus(argv: []const ?[*:0]const u8, out_buf: []u8) ?[]const u8 {
     }
     _ = std.c.close(pipe_fds[0]);
 
-    // Wait for child
     var status: c_int = 0;
     _ = std.c.waitpid(pid, &status, 0);
 
@@ -446,17 +357,13 @@ fn runGdbus(argv: []const ?[*:0]const u8, out_buf: []u8) ?[]const u8 {
     return out_buf[0..total];
 }
 
-/// Extract an object path from gdbus output like: (objectpath '/org/freedesktop/portal/desktop/session/...',)
 fn extractObjectPath(output: []const u8, prefix: []const u8) ?[]const u8 {
-    // Look for 'prefix/...' pattern
     if (std.mem.indexOf(u8, output, prefix)) |start| {
-        // Find the closing quote
         if (std.mem.indexOfPos(u8, output, start, "'")) |q_start| {
             if (std.mem.indexOfPos(u8, output, q_start + 1, "'")) |q_end| {
                 return output[q_start + 1 .. q_end];
             }
         }
-        // Try without quotes — just find end of path
         var end = start;
         while (end < output.len and output[end] != ')' and output[end] != ',' and output[end] != '\'' and output[end] != ' ' and output[end] != '\n') : (end += 1) {}
         if (end > start) return output[start..end];
@@ -491,32 +398,19 @@ fn portalCreateSession() !void {
         null,
     };
     const output = runGdbus(@constCast(&argv), &out_buf) orelse {
-        std.debug.print("fulton: portal CreateSession failed (gdbus error)\n", .{});
         return HotkeyError.RegistrationFailed;
     };
-    std.debug.print("fulton: portal CreateSession response: {s}\n", .{output});
 
-    // The session handle follows a predictable pattern:
-    // /org/freedesktop/portal/desktop/session/<sender>/<token>
-    // With our token 'fulton1', we can construct it, but let's try to extract it
     if (extractObjectPath(output, "/org/freedesktop/portal/desktop")) |path| {
         const len = @min(path.len, portal_session_handle.len);
         @memcpy(portal_session_handle[0..len], path[0..len]);
         portal_session_handle_len = len;
     } else {
-        // Use the conventional path format
-        // The sender name is like :1.123, converted to _1_123
-        // We can get it from the environment or just use a well-known token pattern
-        // Actually, xdg-desktop-portal constructs it as:
-        // /org/freedesktop/portal/desktop/session/{sender}/{session_handle_token}
-        // Since we can't easily get our bus sender name, let's try introspecting
-        std.debug.print("fulton: could not extract session handle from response\n", .{});
         return HotkeyError.RegistrationFailed;
     }
 }
 
 fn portalBindShortcuts() !void {
-    // Build the BindShortcuts call with all registered shortcuts
     var shortcuts_arg_buf: [2048]u8 = undefined;
     var stream = std.io.fixedBufferStream(&shortcuts_arg_buf);
     const w = stream.writer();
@@ -539,7 +433,6 @@ fn portalBindShortcuts() !void {
     }
     w.writeAll("]") catch return HotkeyError.RegistrationFailed;
 
-    // Null-terminate the shortcuts arg
     const shortcuts_written = stream.getWritten();
     if (shortcuts_written.len >= shortcuts_arg_buf.len) return HotkeyError.RegistrationFailed;
     shortcuts_arg_buf[shortcuts_written.len] = 0;
@@ -560,21 +453,16 @@ fn portalBindShortcuts() !void {
         "--method", "org.freedesktop.portal.GlobalShortcuts.BindShortcuts",
         session_path_z,
         @ptrCast(&shortcuts_arg_buf),
-        "", // parent_window
-        "{}", // options
+        "",
+        "{}",
         null,
     };
-    const output = runGdbus(@constCast(&argv), &out_buf) orelse {
-        std.debug.print("fulton: portal BindShortcuts failed\n", .{});
+    _ = runGdbus(@constCast(&argv), &out_buf) orelse {
         return HotkeyError.RegistrationFailed;
     };
-    std.debug.print("fulton: portal BindShortcuts response: {s}\n", .{output});
 }
 
 fn portalRun() !void {
-    std.debug.print("fulton: starting portal signal monitor\n", .{});
-
-    // Use gdbus monitor to watch for Activated signals
     var pipe_fds: [2]c_int = undefined;
     if (std.c.pipe(&pipe_fds) != 0) return HotkeyError.RunLoopFailed;
 
@@ -586,9 +474,8 @@ fn portalRun() !void {
     }
 
     if (pid == 0) {
-        // Child: run gdbus monitor
         _ = std.c.close(pipe_fds[0]);
-        _ = std.c.dup2(pipe_fds[1], 1); // stdout to pipe
+        _ = std.c.dup2(pipe_fds[1], 1);
         _ = std.c.close(pipe_fds[1]);
         const argv = [_]?[*:0]const u8{
             "/usr/bin/gdbus",
@@ -606,7 +493,6 @@ fn portalRun() !void {
         std.process.exit(127);
     }
 
-    // Parent: read lines from monitor
     _ = std.c.close(pipe_fds[1]);
     portal_monitor_pid = pid;
     portal_monitor_fd = pipe_fds[0];
@@ -626,23 +512,18 @@ fn portalRun() !void {
         if (poll_ret <= 0) continue;
 
         const n = std.c.read(portal_monitor_fd, @ptrCast(line_buf[line_len..].ptr), line_buf.len - line_len);
-        if (n <= 0) break; // monitor died
+        if (n <= 0) break;
         line_len += @intCast(n);
 
-        // Process complete lines
         while (std.mem.indexOf(u8, line_buf[0..line_len], "\n")) |newline_pos| {
             const line = line_buf[0..newline_pos];
 
-            // Look for Activated signal:
-            // /org/freedesktop/portal/desktop: org.freedesktop.portal.GlobalShortcuts.Activated (...)
             if (std.mem.indexOf(u8, line, "GlobalShortcuts.Activated") != null) {
-                // Extract shortcut_id — it appears as 'fulton-N' in the signal args
                 for (&registrations) |*slot| {
                     if (slot.*) |reg| {
                         var id_buf: [32]u8 = undefined;
                         const id_str = std.fmt.bufPrint(&id_buf, "fulton-{d}", .{reg.id}) catch continue;
                         if (std.mem.indexOf(u8, line, id_str) != null) {
-                            std.debug.print("fulton: portal Activated signal for {s}\n", .{id_str});
                             reg.callback(reg.userdata);
                             break;
                         }
@@ -650,7 +531,6 @@ fn portalRun() !void {
                 }
             }
 
-            // Shift remaining data
             const remaining = line_len - newline_pos - 1;
             if (remaining > 0) {
                 std.mem.copyForwards(u8, &line_buf, line_buf[newline_pos + 1 .. line_len]);
@@ -659,8 +539,7 @@ fn portalRun() !void {
         }
     }
 
-    // Cleanup
-    _ = std.c.kill(portal_monitor_pid, 15); // SIGTERM
+    _ = std.c.kill(portal_monitor_pid, 15);
     _ = std.c.close(portal_monitor_fd);
     var status: c_int = 0;
     _ = std.c.waitpid(portal_monitor_pid, &status, 0);
@@ -722,7 +601,6 @@ extern "X11" fn XSync(display: *Display, discard: c_int) c_int;
 var x11_display: ?*Display = null;
 var x11_root: Window_ = 0;
 
-// X11 KeySym values
 const XK_a: KeySym = 0x0061;
 const XK_0: KeySym = 0x0030;
 const XK_F1: KeySym = 0xFFBE;
@@ -774,22 +652,14 @@ fn modsToX11Mask(mods: hotkey.Modifier) c_uint {
 }
 
 const lock_masks = [_]c_uint{
-    0,
-    LockMask,
-    Mod2Mask,
-    LockMask | Mod2Mask,
-    Mod3Mask,
-    LockMask | Mod3Mask,
-    Mod2Mask | Mod3Mask,
+    0, LockMask, Mod2Mask, LockMask | Mod2Mask,
+    Mod3Mask, LockMask | Mod3Mask, Mod2Mask | Mod3Mask,
     LockMask | Mod2Mask | Mod3Mask,
 };
 
 fn x11Register(modifiers: hotkey.Modifier, key: hotkey.Key, idx: usize, id: u32, callback: HotkeyCallback, userdata: ?*anyopaque) !void {
     if (x11_display == null) {
-        x11_display = XOpenDisplay(null) orelse {
-            std.debug.print("fulton: failed to open X11 display\n", .{});
-            return HotkeyError.RunLoopFailed;
-        };
+        x11_display = XOpenDisplay(null) orelse return HotkeyError.RunLoopFailed;
         x11_root = XDefaultRootWindow(x11_display.?);
     }
     const dpy = x11_display.?;
@@ -806,13 +676,9 @@ fn x11Register(modifiers: hotkey.Modifier, key: hotkey.Key, idx: usize, id: u32,
     _ = XSync(dpy, 0);
 
     registrations[idx] = .{
-        .id = id,
-        .modifiers = modifiers,
-        .key = key,
-        .callback = callback,
-        .userdata = userdata,
-        .x11_keycode = keycode,
-        .x11_mods = x11_mods,
+        .id = id, .modifiers = modifiers, .key = key,
+        .callback = callback, .userdata = userdata,
+        .x11_keycode = keycode, .x11_mods = x11_mods,
     };
 }
 
@@ -874,30 +740,22 @@ pub fn register(
     //           3) evdev (needs input group, works everywhere)
     if (active_backend == .none) {
         if (isWayland() and portalCheckAvailable()) {
-            std.debug.print("fulton: using D-Bus GlobalShortcuts portal\n", .{});
             active_backend = .portal;
             portalCreateSession() catch {
-                std.debug.print("fulton: portal session failed, trying evdev fallback\n", .{});
-                active_backend = .none; // reset to try next
+                active_backend = .none;
             };
         }
 
         if (active_backend == .none and !isWayland()) {
-            std.debug.print("fulton: using X11 backend\n", .{});
             active_backend = .x11;
         }
 
         if (active_backend == .none) {
-            // Try evdev as last resort
             const test_fd = std.c.open("/dev/input/event0", @bitCast(std.c.O{ .ACCMODE = .RDONLY }), @as(c_uint, 0));
             if (test_fd >= 0) {
                 _ = std.c.close(test_fd);
-                std.debug.print("fulton: using evdev backend\n", .{});
                 active_backend = .evdev;
             } else {
-                std.debug.print("fulton: no backend available\n", .{});
-                std.debug.print("fulton: on Wayland without portal support, add user to 'input' group:\n", .{});
-                std.debug.print("fulton:   sudo usermod -aG input $USER  (then log out/in)\n", .{});
                 return HotkeyError.RunLoopFailed;
             }
         }
@@ -906,15 +764,10 @@ pub fn register(
     switch (active_backend) {
         .x11 => try x11Register(modifiers, key, idx, id, callback, userdata),
         .evdev, .portal => {
-            // evdev/portal don't need per-key registration with X11 — just store
             registrations[idx] = .{
-                .id = id,
-                .modifiers = modifiers,
-                .key = key,
-                .callback = callback,
-                .userdata = userdata,
-                .x11_keycode = 0,
-                .x11_mods = 0,
+                .id = id, .modifiers = modifiers, .key = key,
+                .callback = callback, .userdata = userdata,
+                .x11_keycode = 0, .x11_mods = 0,
             };
         },
         .none => unreachable,
@@ -942,8 +795,6 @@ pub fn unregister(handle: HotkeyHandle) void {
 }
 
 pub fn run() !void {
-    // For portal, bind shortcuts just before entering the event loop
-    // (all registrations are done by now)
     if (active_backend == .portal) {
         try portalBindShortcuts();
     }
