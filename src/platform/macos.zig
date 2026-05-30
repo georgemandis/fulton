@@ -119,7 +119,6 @@ extern "c" fn CFMachPortCreateRunLoopSource(
 ) ?CFRunLoopSourceRef;
 extern "c" fn CFRunLoopGetMain() CFRunLoopRef;
 extern "c" fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef) void;
-extern "c" fn CFRunLoopRun() void;
 extern "c" fn CFRunLoopStop(rl: CFRunLoopRef) void;
 
 // kCGSessionEventTap = 1, kCGHeadInsertEventTap = 0
@@ -138,8 +137,14 @@ const typeEventHotKeyID: u32 = 0x686B6964; // 'hkid'
 // CGEvent field for virtual keycode
 const kCGKeyboardEventKeycode: u32 = 9;
 
-// NSApplicationLoad — lightweight init for Carbon event delivery from CLI
-extern "c" fn NSApplicationLoad() bool;
+// ObjC runtime — needed to properly initialize NSApplication for Carbon event delivery
+const objc_id = *opaque {};
+const objc_SEL = *opaque {};
+const objc_Class = *opaque {};
+
+extern "c" fn objc_getClass(name: [*:0]const u8) ?objc_Class;
+extern "c" fn sel_registerName(name: [*:0]const u8) objc_SEL;
+extern "c" fn objc_msgSend() void; // actual signature varies; we cast per call
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -387,7 +392,22 @@ pub fn register(
         .simple => {
             // Install Carbon event handler once
             if (!carbon_handler_installed) {
-                _ = NSApplicationLoad();
+                // Initialize NSApplication for Carbon event delivery.
+                // [NSApp run] in run() handles the event loop, but we
+                // set Accessory policy to suppress Dock icon.
+                {
+                    const NSAppClass = objc_getClass("NSApplication") orelse
+                        return HotkeyError.RegistrationFailed;
+                    const sharedApp = sel_registerName("sharedApplication");
+                    const setPolicy = sel_registerName("setActivationPolicy:");
+
+                    const msgSend_id = @as(*const fn (objc_Class, objc_SEL) callconv(.c) objc_id, @ptrCast(&objc_msgSend));
+                    const app = msgSend_id(NSAppClass, sharedApp);
+
+                    // NSApplicationActivationPolicyAccessory = 1 (no Dock icon)
+                    const msgSend_void_int = @as(*const fn (objc_id, objc_SEL, isize) callconv(.c) void, @ptrCast(&objc_msgSend));
+                    msgSend_void_int(app, setPolicy, 1);
+                }
 
                 var event_types = [_]EventTypeSpec{.{
                     .eventClass = kEventClassKeyboard,
@@ -479,9 +499,28 @@ pub fn unregister(handle: HotkeyHandle) void {
 }
 
 pub fn run() !void {
-    CFRunLoopRun();
+    // Use [NSApp run] to properly pump the Cocoa/Carbon event loop.
+    // CFRunLoopRun/CFRunLoopRunInMode don't dispatch Carbon hotkey events.
+    const NSAppClass = objc_getClass("NSApplication") orelse return error.RunLoopFailed;
+    const sharedApp = sel_registerName("sharedApplication");
+    const runSel = sel_registerName("run");
+
+    const msgSend_id = @as(*const fn (objc_Class, objc_SEL) callconv(.c) objc_id, @ptrCast(&objc_msgSend));
+    const app = msgSend_id(NSAppClass, sharedApp);
+
+    const msgSend_void = @as(*const fn (objc_id, objc_SEL) callconv(.c) void, @ptrCast(&objc_msgSend));
+    msgSend_void(app, runSel);
 }
 
 pub fn stop() void {
-    CFRunLoopStop(CFRunLoopGetMain());
+    const NSAppClass = objc_getClass("NSApplication") orelse return;
+    const sharedApp = sel_registerName("sharedApplication");
+    const stopSel = sel_registerName("stop:");
+
+    const msgSend_id = @as(*const fn (objc_Class, objc_SEL) callconv(.c) objc_id, @ptrCast(&objc_msgSend));
+    const app = msgSend_id(NSAppClass, sharedApp);
+
+    // [NSApp stop:nil] — posts an event to break out of [NSApp run]
+    const msgSend_void_id = @as(*const fn (objc_id, objc_SEL, ?objc_id) callconv(.c) void, @ptrCast(&objc_msgSend));
+    msgSend_void_id(app, stopSel, null);
 }

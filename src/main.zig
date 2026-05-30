@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Parse flags
     var key_str: ?[]const u8 = null;
-    var exec_cmd: ?[]const u8 = null;
+    var exec_cmd: ?[:0]const u8 = null;
     var backend_str: ?[]const u8 = null;
     var help_requested = false;
     var list_keys = false;
@@ -121,11 +121,10 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     } else .simple;
 
-    // Store exec_cmd for the callback
-    const cmd = exec_cmd.?;
+    const cmd: [:0]const u8 = exec_cmd.?;
 
     const ExecContext = struct {
-        command: []const u8,
+        command: [:0]const u8,
         io_handle: Io,
 
         fn onHotkey(userdata: ?*anyopaque) void {
@@ -136,14 +135,13 @@ pub fn main(init: std.process.Init) !void {
 
             if (builtin.os.tag == .windows) {
                 // Windows: shell out via C runtime system()
-                const cmd_z: [*:0]const u8 = @ptrCast(ctx.command.ptr);
-                _ = cSystem(cmd_z);
+                _ = cSystem(ctx.command.ptr);
             } else {
                 // POSIX: fork and exec via /bin/sh -c
                 const argv = [_]?[*:0]const u8{
                     "/bin/sh",
                     "-c",
-                    @ptrCast(ctx.command.ptr),
+                    ctx.command.ptr,
                     null,
                 };
 
