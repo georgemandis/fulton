@@ -1,0 +1,14 @@
+[package]
+name = "fulton-rust-example"
+version = "0.1.0"
+edition = "2021"
+
+# This example shows how to link libfulton.a into a Rust application.
+# Build the Zig static library first:
+#   cd ../.. && zig build
+#
+# Then:
+#   FULTON_LIB_DIR=../../zig-out/lib cargo run
+
+[build-dependencies]
+# none — we link manually via build.rs
