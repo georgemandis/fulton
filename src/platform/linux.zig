@@ -236,7 +236,10 @@ const lock_masks = [_]c_uint{
 
 fn ensureDisplay() !void {
     if (display != null) return;
-    display = XOpenDisplay(null) orelse return HotkeyError.RunLoopFailed;
+    display = XOpenDisplay(null) orelse {
+        std.debug.print("fulton: failed to open X11 display (is DISPLAY set? is X11 running?)\n", .{});
+        return HotkeyError.RunLoopFailed;
+    };
     root_window = XDefaultRootWindow(display.?);
 }
 
@@ -272,9 +275,16 @@ pub fn register(
     const keycode = XKeysymToKeycode(dpy, keysym);
     const x11_mods = modsToX11Mask(modifiers);
 
+    std.debug.print("fulton: X11 keysym=0x{X}, keycode={}, mods=0x{X}\n", .{ keysym, keycode, x11_mods });
+
+    if (keycode == 0) {
+        std.debug.print("fulton: XKeysymToKeycode returned 0 — keysym not found on this keyboard\n", .{});
+        return HotkeyError.RegistrationFailed;
+    }
+
     // Grab all 8 lock-modifier variants
     for (lock_masks) |lock| {
-        _ = XGrabKey(
+        const result = XGrabKey(
             dpy,
             @intCast(keycode),
             x11_mods | lock,
@@ -283,8 +293,12 @@ pub fn register(
             GrabModeAsync,
             GrabModeAsync,
         );
+        if (result != 0) {
+            std.debug.print("fulton: XGrabKey returned {} for mods=0x{X}\n", .{ result, x11_mods | lock });
+        }
     }
     _ = XSync(dpy, 0);
+    std.debug.print("fulton: XGrabKey registered successfully\n", .{});
 
     registrations[idx] = .{
         .id = id,
@@ -326,6 +340,8 @@ pub fn run() !void {
 
     should_stop.store(false, .release);
 
+    std.debug.print("fulton: entering X11 event loop\n", .{});
+
     while (!should_stop.load(.acquire)) {
         var event: XEvent = undefined;
         _ = XNextEvent(dpy, &event);
@@ -336,13 +352,24 @@ pub fn run() !void {
             // Strip lock modifiers for comparison
             const clean_state = key_event.state & ~@as(c_uint, LockMask | Mod2Mask | Mod3Mask);
 
+            std.debug.print("fulton: KeyPress keycode={}, state=0x{X}, clean_state=0x{X}\n", .{ keycode, key_event.state, clean_state });
+
+            var matched = false;
             for (&registrations) |*slot| {
                 if (slot.*) |reg| {
                     if (keycode == reg.keycode and clean_state == reg.x11_mods) {
+                        std.debug.print("fulton: match! firing callback\n", .{});
                         reg.callback(reg.userdata);
+                        matched = true;
                         break;
                     }
                 }
+            }
+            if (!matched) {
+                std.debug.print("fulton: no match (expected keycode={}, mods=0x{X})\n", .{
+                    if (registrations[0]) |r| r.keycode else 0,
+                    if (registrations[0]) |r| r.x11_mods else 0,
+                });
             }
         }
     }
