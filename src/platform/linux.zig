@@ -301,40 +301,47 @@ fn evdevRun() !void {
         if (poll_ret <= 0) continue;
 
         for (0..evdev_count) |i| {
-            if (pollfds[i].revents & std.c.POLL.IN == 0) continue;
+            if ((pollfds[i].revents & std.c.POLL.IN) == 0) continue;
 
-            var ev: InputEvent = undefined;
-            const bytes_read = std.c.read(evdev_fds[i], @ptrCast(&ev), @sizeOf(InputEvent));
-            if (bytes_read != @sizeOf(InputEvent)) continue;
+            // Read all available events from this device
+            while (true) {
+                var ev: InputEvent = undefined;
+                const bytes_read = std.c.read(evdev_fds[i], @ptrCast(&ev), @sizeOf(InputEvent));
+                if (bytes_read != @sizeOf(InputEvent)) break;
 
-            if (ev.type != EV_KEY) continue;
+                if (ev.type != EV_KEY) continue;
 
-            const pressed = ev.value == 1; // 1 = press, 0 = release, 2 = repeat
+                const pressed = ev.value == 1; // 1 = press, 0 = release, 2 = repeat
 
-            // Update modifier state
-            if (isModifierKey(ev.code)) {
-                updateModState(ev.code, pressed);
-                continue;
-            }
+                // Update modifier state
+                if (isModifierKey(ev.code)) {
+                    updateModState(ev.code, pressed or ev.value == 2);
+                    continue;
+                }
 
-            // Only fire on key press (not repeat or release)
-            if (!pressed) continue;
+                // Only fire on key press (not repeat or release)
+                if (!pressed) continue;
 
-            // Check against registrations
-            for (&registrations) |*slot| {
-                if (slot.*) |reg| {
-                    const expected_evdev = keyToEvdev(reg.key);
-                    if (ev.code != expected_evdev) continue;
+                std.debug.print("fulton: key code={}, ctrl={}, shift={}, alt={}, super={}\n", .{
+                    ev.code, mod_ctrl, mod_shift, mod_alt, mod_super,
+                });
 
-                    // Check modifiers
-                    if (reg.modifiers.ctrl != mod_ctrl) continue;
-                    if (reg.modifiers.shift != mod_shift) continue;
-                    if (reg.modifiers.alt != mod_alt) continue;
-                    if (reg.modifiers.cmd != mod_super) continue;
+                // Check against registrations
+                for (&registrations) |*slot| {
+                    if (slot.*) |reg| {
+                        const expected_evdev = keyToEvdev(reg.key);
+                        if (ev.code != expected_evdev) continue;
 
-                    std.debug.print("fulton: evdev match! firing callback\n", .{});
-                    reg.callback(reg.userdata);
-                    break;
+                        // Check modifiers
+                        if (reg.modifiers.ctrl != mod_ctrl) continue;
+                        if (reg.modifiers.shift != mod_shift) continue;
+                        if (reg.modifiers.alt != mod_alt) continue;
+                        if (reg.modifiers.cmd != mod_super) continue;
+
+                        std.debug.print("fulton: evdev match! firing callback\n", .{});
+                        reg.callback(reg.userdata);
+                        break;
+                    }
                 }
             }
         }
