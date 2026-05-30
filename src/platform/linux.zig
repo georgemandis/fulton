@@ -251,14 +251,22 @@ fn evdevRun() !void {
 
                 if (!pressed) continue;
 
+                std.debug.print("evdev: key={d} mods: ctrl={} shift={} alt={} super={}\n", .{
+                    ev.code, mod_ctrl, mod_shift, mod_alt, mod_super,
+                });
+
                 for (&registrations) |*slot| {
                     if (slot.*) |reg| {
                         const expected_evdev = keyToEvdev(reg.key);
+                        std.debug.print("  checking reg: expected_key={d} want ctrl={} shift={} alt={} cmd={}\n", .{
+                            expected_evdev, reg.modifiers.ctrl, reg.modifiers.shift, reg.modifiers.alt, reg.modifiers.cmd,
+                        });
                         if (ev.code != expected_evdev) continue;
                         if (reg.modifiers.ctrl != mod_ctrl) continue;
                         if (reg.modifiers.shift != mod_shift) continue;
                         if (reg.modifiers.alt != mod_alt) continue;
                         if (reg.modifiers.cmd != mod_super) continue;
+                        std.debug.print("  MATCH! firing callback\n", .{});
                         reg.callback(reg.userdata);
                         break;
                     }
