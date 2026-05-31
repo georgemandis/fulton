@@ -55,6 +55,17 @@ fn isWayland() bool {
         if (std.mem.eql(u8, slice, "x11")) return false;
     }
     if (std.c.getenv("WAYLAND_DISPLAY") != null) return true;
+    // sudo strips env vars — probe for wayland socket in common runtime dirs
+    // SUDO_UID gives us the original user's UID
+    const uid_str = if (std.c.getenv("SUDO_UID")) |s| std.mem.sliceTo(s, 0) else null;
+    if (uid_str) |uid| {
+        var path_buf: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/run/user/{s}/wayland-0\x00", .{uid}) catch null;
+        if (path) |p| {
+            // F_OK = 0 (check file existence)
+            if (std.c.access(@ptrCast(p.ptr), 0) == 0) return true;
+        }
+    }
     if (std.c.getenv("DISPLAY") != null) return false;
     return true;
 }
@@ -797,9 +808,11 @@ pub fn register(
     //           2) X11 XGrabKey (no perms, X11 sessions)
     //           3) evdev (needs input group, works everywhere)
     if (active_backend == .none) {
-        std.debug.print("backend: isWayland={}\n", .{isWayland()});
+        const wayland = isWayland();
+        std.debug.print("backend: isWayland={}\n", .{wayland});
 
-        if (isWayland() and portalCheckAvailable()) {
+        // 1) Try D-Bus portal (modern Wayland desktops, no perms needed)
+        if (wayland and portalCheckAvailable()) {
             std.debug.print("backend: portal available, creating session\n", .{});
             active_backend = .portal;
             portalCreateSession() catch {
@@ -808,21 +821,27 @@ pub fn register(
             };
         }
 
-        if (active_backend == .none and !isWayland() and loadX11()) {
-            std.debug.print("backend: using X11\n", .{});
-            active_backend = .x11;
-        }
-
+        // 2) Try evdev (needs root or input group, but works everywhere
+        //    including Wayland where XGrabKey is useless)
         if (active_backend == .none) {
             const test_fd = std.c.open("/dev/input/event0", @bitCast(std.c.O{ .ACCMODE = .RDONLY }), @as(c_uint, 0));
             if (test_fd >= 0) {
                 _ = std.c.close(test_fd);
                 std.debug.print("backend: using evdev\n", .{});
                 active_backend = .evdev;
-            } else {
-                std.debug.print("backend: no backend available\n", .{});
-                return HotkeyError.RunLoopFailed;
             }
+        }
+
+        // 3) Try X11 (only on confirmed X11 sessions — XGrabKey on XWayland
+        //    can't intercept global keys)
+        if (active_backend == .none and !wayland and loadX11()) {
+            std.debug.print("backend: using X11\n", .{});
+            active_backend = .x11;
+        }
+
+        if (active_backend == .none) {
+            std.debug.print("backend: no backend available\n", .{});
+            return HotkeyError.RunLoopFailed;
         }
 
         std.debug.print("backend: selected {s}\n", .{@tagName(active_backend)});
