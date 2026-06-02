@@ -10,6 +10,7 @@ pub const HotkeyError = error{
     TooManyHotkeys,
     EventTapDenied,
     RunLoopFailed,
+    WaylandPermissionDenied,
 };
 
 pub const Backend = enum {
@@ -214,14 +215,11 @@ fn openInputDevices() !void {
             if (evdev_count < MAX_EVDEV_FDS) {
                 evdev_fds[evdev_count] = fd;
                 evdev_count += 1;
-                std.debug.print("evdev: opened /dev/input/event{} (fd={})\n", .{ i, fd });
             } else {
                 _ = std.c.close(fd);
             }
         }
     }
-
-    std.debug.print("evdev: opened {} devices total\n", .{evdev_count});
 
     if (evdev_count == 0) {
         return HotkeyError.RunLoopFailed;
@@ -229,7 +227,6 @@ fn openInputDevices() !void {
 }
 
 fn evdevRun() !void {
-    std.debug.print("evdevRun: entering event loop\n", .{});
     try openInputDevices();
 
     should_stop.store(false, .release);
@@ -266,22 +263,13 @@ fn evdevRun() !void {
 
                 if (!pressed) continue;
 
-                std.debug.print("evdev: key={d} mods: ctrl={} shift={} alt={} super={}\n", .{
-                    ev.code, mod_ctrl, mod_shift, mod_alt, mod_super,
-                });
-
                 for (&registrations) |*slot| {
                     if (slot.*) |reg| {
-                        const expected_evdev = keyToEvdev(reg.key);
-                        std.debug.print("  checking reg: expected_key={d} want ctrl={} shift={} alt={} cmd={}\n", .{
-                            expected_evdev, reg.modifiers.ctrl, reg.modifiers.shift, reg.modifiers.alt, reg.modifiers.cmd,
-                        });
-                        if (ev.code != expected_evdev) continue;
+                        if (ev.code != keyToEvdev(reg.key)) continue;
                         if (reg.modifiers.ctrl != mod_ctrl) continue;
                         if (reg.modifiers.shift != mod_shift) continue;
                         if (reg.modifiers.alt != mod_alt) continue;
                         if (reg.modifiers.cmd != mod_super) continue;
-                        std.debug.print("  MATCH! firing callback\n", .{});
                         reg.callback(reg.userdata);
                         break;
                     }
@@ -809,14 +797,11 @@ pub fn register(
     //           3) evdev (needs input group, works everywhere)
     if (active_backend == .none) {
         const wayland = isWayland();
-        std.debug.print("backend: isWayland={}\n", .{wayland});
 
         // 1) Try D-Bus portal (modern Wayland desktops, no perms needed)
         if (wayland and portalCheckAvailable()) {
-            std.debug.print("backend: portal available, creating session\n", .{});
             active_backend = .portal;
             portalCreateSession() catch {
-                std.debug.print("backend: portal session failed, falling back\n", .{});
                 active_backend = .none;
             };
         }
@@ -827,7 +812,6 @@ pub fn register(
             const test_fd = std.c.open("/dev/input/event0", @bitCast(std.c.O{ .ACCMODE = .RDONLY }), @as(c_uint, 0));
             if (test_fd >= 0) {
                 _ = std.c.close(test_fd);
-                std.debug.print("backend: using evdev\n", .{});
                 active_backend = .evdev;
             }
         }
@@ -835,16 +819,15 @@ pub fn register(
         // 3) Try X11 (only on confirmed X11 sessions — XGrabKey on XWayland
         //    can't intercept global keys)
         if (active_backend == .none and !wayland and loadX11()) {
-            std.debug.print("backend: using X11\n", .{});
             active_backend = .x11;
         }
 
         if (active_backend == .none) {
-            std.debug.print("backend: no backend available\n", .{});
+            if (wayland) {
+                return HotkeyError.WaylandPermissionDenied;
+            }
             return HotkeyError.RunLoopFailed;
         }
-
-        std.debug.print("backend: selected {s}\n", .{@tagName(active_backend)});
     }
 
     switch (active_backend) {

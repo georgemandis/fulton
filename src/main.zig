@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const hotkey = @import("hotkey");
 
-const version = "0.1.1";
+const version = "0.2.0";
 
 // C runtime system() — used on Windows for command execution.
 // On POSIX we use fork/execve instead for non-blocking fire-and-forget.
@@ -36,6 +36,7 @@ pub fn main(init: std.process.Init) !void {
     var backend_str: ?[]const u8 = null;
     var help_requested = false;
     var list_keys = false;
+    var setup_requested = false;
 
     var i: usize = 0;
     while (i < all_args.items.len) : (i += 1) {
@@ -66,6 +67,8 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.eql(u8, arg, "--list-keys")) {
             list_keys = true;
+        } else if (std.mem.eql(u8, arg, "--setup")) {
+            setup_requested = true;
         } else if (std.mem.eql(u8, arg, "help")) {
             help_requested = true;
         }
@@ -85,6 +88,15 @@ pub fn main(init: std.process.Init) !void {
         var buf: [4096]u8 = undefined;
         var w = stdout_file.writerStreaming(io, &buf);
         try printKeyList(&w.interface);
+        try w.interface.flush();
+        return;
+    }
+
+    if (setup_requested) {
+        const stdout_file = File.stdout();
+        var buf: [4096]u8 = undefined;
+        var w = stdout_file.writerStreaming(io, &buf);
+        try printSetup(&w.interface);
         try w.interface.flush();
         return;
     }
@@ -166,12 +178,27 @@ pub fn main(init: std.process.Init) !void {
         .io_handle = io,
     };
 
-    _ = hotkey.register(parsed.modifiers, parsed.key, &ExecContext.onHotkey, @ptrCast(&ctx), backend) catch {
+    _ = hotkey.register(parsed.modifiers, parsed.key, &ExecContext.onHotkey, @ptrCast(&ctx), backend) catch |err| {
         const stderr_file = File.stderr();
-        var buf: [512]u8 = undefined;
+        var buf: [1024]u8 = undefined;
         var w = stderr_file.writerStreaming(io, &buf);
         try w.interface.print("Error: failed to register hotkey\n", .{});
-        if (backend == .advanced) {
+        if (builtin.os.tag == .linux and err == hotkey.HotkeyError.WaylandPermissionDenied) {
+            try w.interface.print(
+                \\
+                \\On Wayland, fulton needs permission to read keyboard input.
+                \\
+                \\Option 1: Add your user to the input group (recommended):
+                \\  sudo usermod -aG input $USER
+                \\  (Log out and back in for this to take effect)
+                \\
+                \\Option 2: Run with sudo:
+                \\  sudo fulton --key "..." --exec "..."
+                \\
+                \\Run fulton --setup for more details.
+                \\
+            , .{});
+        } else if (backend == .advanced) {
             try w.interface.print("Advanced mode requires Accessibility permission (macOS) or may be blocked by AV (Windows).\n", .{});
         }
         try w.interface.flush();
@@ -211,6 +238,7 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\  --exec, -e <command>      Command to execute when hotkey fires
         \\  --backend, -b <mode>      Backend: "simple" (default) or "advanced"
         \\  --list-keys               List all available key names
+        \\  --setup                   Show platform setup instructions
         \\  --version, -V             Show version
         \\  --help, -h                Show this help message
         \\
@@ -218,12 +246,13 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\  simple     No permissions needed. Cannot swallow keys.
         \\             macOS: Carbon RegisterEventHotKey
         \\             Windows: RegisterHotKey
-        \\             Linux: XGrabKey
+        \\             Linux/X11: XGrabKey
+        \\             Linux/Wayland: evdev (run fulton --setup)
         \\
         \\  advanced   Can intercept and swallow keys. May need permissions.
         \\             macOS: CGEventTap (requires Accessibility)
         \\             Windows: SetWindowsHookEx (AV may flag)
-        \\             Linux: XGrabKey (same as simple)
+        \\             Linux: same as simple
         \\
         \\Modifier names: cmd/super/win, ctrl, alt/opt/option, shift
         \\
@@ -239,6 +268,56 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\https://github.com/georgemandis/fulton
         \\
     , .{ version, @tagName(builtin.os.tag) });
+}
+
+fn printSetup(writer: *std.Io.Writer) !void {
+    if (builtin.os.tag == .linux) {
+        try writer.print(
+            \\fulton — Linux setup
+            \\
+            \\On X11 sessions, fulton works out of the box using XGrabKey.
+            \\
+            \\On Wayland, fulton reads keyboard input via evdev, which requires
+            \\permission to access /dev/input/event* devices.
+            \\
+            \\Option 1: Add your user to the input group (recommended)
+            \\  sudo usermod -aG input $USER
+            \\  Then log out and back in for the change to take effect.
+            \\
+            \\Option 2: Run fulton with sudo
+            \\  sudo fulton --key "ctrl+shift+v" --exec "your-command"
+            \\
+            \\Option 3: Set a file capability on the fulton binary
+            \\  sudo setcap cap_dac_read_search+ep $(which fulton)
+            \\  This lets fulton read input devices without full root access.
+            \\  Note: must be re-applied after each upgrade.
+            \\
+        , .{});
+    } else if (builtin.os.tag == .macos) {
+        try writer.print(
+            \\fulton — macOS setup
+            \\
+            \\Simple mode works out of the box (no permissions needed).
+            \\
+            \\Advanced mode requires Accessibility permission:
+            \\  System Settings > Privacy & Security > Accessibility
+            \\  Add your terminal app or fulton to the allowed list.
+            \\
+        , .{});
+    } else if (builtin.os.tag == .windows) {
+        try writer.print(
+            \\fulton — Windows setup
+            \\
+            \\Simple mode works out of the box (no permissions needed).
+            \\
+            \\Advanced mode uses a low-level keyboard hook. Some antivirus
+            \\software may flag this as suspicious — you may need to add
+            \\an exception for fulton.exe.
+            \\
+        , .{});
+    } else {
+        try writer.print("No setup instructions available for this platform.\n", .{});
+    }
 }
 
 fn printKeyList(writer: *std.Io.Writer) !void {

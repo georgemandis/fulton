@@ -29,7 +29,8 @@ Download the latest release from [GitHub Releases](https://github.com/georgemand
 |----------|-------------|---------------|
 | macOS    | ✅ Carbon `RegisterEventHotKey` (no permissions) | ✅ `CGEventTap` (Accessibility permission) |
 | Windows  | ✅ `RegisterHotKey` (no permissions) | ✅ `SetWindowsHookEx` WH_KEYBOARD_LL |
-| Linux    | ✅ `XGrabKey` on root window (X11) | ⬜ Wayland portal (planned) |
+| Linux/X11 | ✅ `XGrabKey` on root window | ✅ same |
+| Linux/Wayland | ✅ evdev (see `fulton --setup`) | ✅ same |
 
 Built and tested against **Zig 0.16.0**.
 
@@ -81,6 +82,7 @@ fulton --list-keys
 | `--exec, -e <command>` | Command to execute when hotkey fires |
 | `--backend, -b <mode>` | `simple` (default) or `advanced` |
 | `--list-keys` | List all available key and modifier names |
+| `--setup` | Show platform setup instructions |
 | `--version, -V` | Show version |
 | `--help, -h` | Show usage |
 
@@ -198,7 +200,7 @@ src/
 └── platform/
     ├── macos.zig           # Carbon RegisterEventHotKey + CGEventTap
     ├── windows.zig         # RegisterHotKey + SetWindowsHookEx
-    └── linux.zig           # XGrabKey on root window
+    └── linux.zig           # X11 XGrabKey, Wayland evdev, D-Bus portal
 examples/
 ├── bun/hotkey.ts           # Bun FFI example
 └── rust/                   # Rust FFI example with Cargo project
@@ -230,17 +232,18 @@ Both the CLI and the FFI shim depend only on the public `hotkey.zig` API. Neithe
 
 ### Linux
 
-- Both modes use `XGrabKey` on the X11 root window. Automatically registers all 8 NumLock/CapsLock/ScrollLock modifier combinations for each hotkey.
-- Wayland does not have a protocol-level equivalent. The XDG Desktop Portal `GlobalShortcuts` interface exists but compositor support is inconsistent (KDE works, GNOME is catching up, Sway has nothing). Wayland portal support is planned.
+- **X11** uses `XGrabKey` on the root window. Automatically registers all 8 NumLock/CapsLock/ScrollLock modifier combinations for each hotkey.
+- **Wayland** uses evdev to read keyboard input directly. Requires either membership in the `input` group or running with `sudo`. Run `fulton --setup` for setup instructions.
+- If the XDG Desktop Portal `GlobalShortcuts` interface is available (GNOME 48+, KDE 5.27+), fulton will prefer that over evdev (no extra permissions needed).
 
 ## Roadmap
 
 - [x] macOS backend (Carbon + CGEventTap)
 - [x] Windows backend (RegisterHotKey + SetWindowsHookEx)
 - [x] Linux/X11 backend (XGrabKey)
+- [x] Linux/Wayland backend (evdev + D-Bus GlobalShortcuts portal)
 - [x] CLI with `--key` / `--exec`
 - [x] C ABI shared library
 - [x] Bun and Rust FFI examples
 - [ ] Multiple hotkeys from a config file
-- [ ] Wayland support via XDG Desktop Portal GlobalShortcuts
 - [ ] Shell completions
