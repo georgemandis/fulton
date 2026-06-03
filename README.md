@@ -81,6 +81,7 @@ fulton --list-keys
 | `--key, -k <hotkey>` | Hotkey string (e.g. `"cmd+shift+v"`) |
 | `--exec, -e <command>` | Command to execute when hotkey fires |
 | `--backend, -b <mode>` | `simple` (default) or `advanced` |
+| `--config, -c <path>` | Config file path (default: platform config dir) |
 | `--list-keys` | List all available key and modifier names |
 | `--setup` | Show platform setup instructions |
 | `--version, -V` | Show version |
@@ -100,6 +101,46 @@ shift+escape
 **Modifier names:** `cmd` / `super` / `win` / `meta`, `ctrl` / `control`, `alt` / `opt` / `option`, `shift`
 
 **Key names:** `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `return` / `enter`, `tab`, `escape` / `esc`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`
+
+## Config file
+
+Instead of passing `--key` and `--exec` on the command line, you can define multiple hotkeys in a config file:
+
+```
+# ~/.config/fulton/config
+ctrl+shift+v = open -a Schrodinger
+super+space = rofi -show drun
+ctrl+alt+t = ghostty
+```
+
+Then run `fulton` with no arguments to load the default config, or specify a path:
+
+```bash
+# Load default config
+fulton
+
+# Load a specific config
+fulton --config ~/my-hotkeys.conf
+
+# Mix: config file + one-off binding
+fulton --config ~/my-hotkeys.conf --key "ctrl+shift+t" --exec "ghostty"
+```
+
+### Config format
+
+- One binding per line: `hotkey = command`
+- Lines starting with `#` are comments
+- Blank lines are ignored
+- Split on the first `=` (commands may contain `=`)
+- `--backend` applies to all bindings
+
+### Default config location
+
+| Platform | Path |
+|----------|------|
+| macOS | `~/Library/Application Support/fulton/config` |
+| Linux | `$XDG_CONFIG_HOME/fulton/config` (default: `~/.config/fulton/config`) |
+| Windows | `%APPDATA%\fulton\config` |
 
 ## C ABI
 
@@ -245,5 +286,5 @@ Both the CLI and the FFI shim depend only on the public `hotkey.zig` API. Neithe
 - [x] CLI with `--key` / `--exec`
 - [x] C ABI shared library
 - [x] Bun and Rust FFI examples
-- [ ] Multiple hotkeys from a config file
+- [x] Multiple hotkeys from a config file
 - [ ] Shell completions
