@@ -37,6 +37,7 @@ pub fn main(init: std.process.Init) !void {
     var help_requested = false;
     var list_keys = false;
     var setup_requested = false;
+    var config_path: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < all_args.items.len) : (i += 1) {
@@ -64,6 +65,11 @@ pub fn main(init: std.process.Init) !void {
             if (i + 1 < all_args.items.len) {
                 i += 1;
                 backend_str = all_args.items[i];
+            }
+        } else if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+            if (i + 1 < all_args.items.len) {
+                i += 1;
+                config_path = all_args.items[i];
             }
         } else if (std.mem.eql(u8, arg, "--list-keys")) {
             list_keys = true;
@@ -237,6 +243,7 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\  --key, -k <hotkey>        Hotkey string (e.g. "cmd+shift+v")
         \\  --exec, -e <command>      Command to execute when hotkey fires
         \\  --backend, -b <mode>      Backend: "simple" (default) or "advanced"
+        \\  --config, -c <path>       Config file path (default: platform config dir)
         \\  --list-keys               List all available key names
         \\  --setup                   Show platform setup instructions
         \\  --version, -V             Show version
@@ -318,6 +325,95 @@ fn printSetup(writer: *std.Io.Writer) !void {
     } else {
         try writer.print("No setup instructions available for this platform.\n", .{});
     }
+}
+
+fn getDefaultConfigPath(buf: []u8) ?[]const u8 {
+    if (builtin.os.tag == .macos) {
+        const home = std.mem.sliceTo(std.c.getenv("HOME") orelse return null, 0);
+        return std.fmt.bufPrint(buf, "{s}/Library/Application Support/fulton/config", .{home}) catch null;
+    } else if (builtin.os.tag == .linux) {
+        if (std.c.getenv("XDG_CONFIG_HOME")) |xdg| {
+            const xdg_s = std.mem.sliceTo(xdg, 0);
+            if (xdg_s.len > 0) {
+                return std.fmt.bufPrint(buf, "{s}/fulton/config", .{xdg_s}) catch null;
+            }
+        }
+        const home = std.mem.sliceTo(std.c.getenv("HOME") orelse return null, 0);
+        return std.fmt.bufPrint(buf, "{s}/.config/fulton/config", .{home}) catch null;
+    } else if (builtin.os.tag == .windows) {
+        const appdata = std.mem.sliceTo(std.c.getenv("APPDATA") orelse return null, 0);
+        return std.fmt.bufPrint(buf, "{s}\\fulton\\config", .{appdata}) catch null;
+    }
+    return null;
+}
+
+const MAX_BINDINGS = 64;
+
+const ConfigEntry = struct {
+    hotkey_str: []const u8,
+    command: []const u8,
+    line_number: usize,
+};
+
+const ParseConfigError = struct {
+    line_number: usize,
+    message: []const u8,
+};
+
+fn parseConfig(contents: []const u8, entries: []ConfigEntry, errors: []ParseConfigError) struct { entry_count: usize, error_count: usize } {
+    var entry_count: usize = 0;
+    var error_count: usize = 0;
+    var line_number: usize = 0;
+
+    var line_iter = std.mem.splitScalar(u8, contents, '\n');
+    while (line_iter.next()) |raw_line| {
+        line_number += 1;
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+
+        if (line.len == 0) continue;
+        if (line[0] == '#') continue;
+
+        const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse {
+            if (error_count < errors.len) {
+                errors[error_count] = .{
+                    .line_number = line_number,
+                    .message = "expected \"hotkey = command\"",
+                };
+                error_count += 1;
+            }
+            continue;
+        };
+
+        const hotkey_str = std.mem.trim(u8, line[0..eq_pos], " \t");
+        const command = std.mem.trim(u8, line[eq_pos + 1 ..], " \t");
+
+        if (hotkey_str.len == 0) {
+            if (error_count < errors.len) {
+                errors[error_count] = .{ .line_number = line_number, .message = "missing hotkey before '='" };
+                error_count += 1;
+            }
+            continue;
+        }
+
+        if (command.len == 0) {
+            if (error_count < errors.len) {
+                errors[error_count] = .{ .line_number = line_number, .message = "missing command after '='" };
+                error_count += 1;
+            }
+            continue;
+        }
+
+        if (entry_count < entries.len) {
+            entries[entry_count] = .{
+                .hotkey_str = hotkey_str,
+                .command = command,
+                .line_number = line_number,
+            };
+            entry_count += 1;
+        }
+    }
+
+    return .{ .entry_count = entry_count, .error_count = error_count };
 }
 
 fn printKeyList(writer: *std.Io.Writer) !void {
