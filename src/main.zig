@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const hotkey = @import("hotkey");
 
-const version = "0.2.0";
+const version = "0.3.0";
 
 // C runtime system() — used on Windows for command execution.
 // On POSIX we use fork/execve instead for non-blocking fire-and-forget.
