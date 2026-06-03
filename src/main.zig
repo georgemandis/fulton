@@ -107,27 +107,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (key_str == null or exec_cmd == null) {
-        const stderr_file = File.stderr();
-        var buf: [4096]u8 = undefined;
-        var w = stderr_file.writerStreaming(io, &buf);
-        try w.interface.print("Error: --key and --exec are required\n\n", .{});
-        try printUsage(&w.interface);
-        try w.interface.flush();
-        std.process.exit(1);
-    }
-
-    const parsed = hotkey.parseHotkeyString(key_str.?) orelse {
-        const stderr_file = File.stderr();
-        var buf: [4096]u8 = undefined;
-        var w = stderr_file.writerStreaming(io, &buf);
-        try w.interface.print("Error: invalid hotkey string: {s}\n", .{key_str.?});
-        try w.interface.print("Format: modifier+modifier+key (e.g. cmd+shift+v, ctrl+alt+f1)\n", .{});
-        try w.interface.print("Run fulton --list-keys for available key names.\n", .{});
-        try w.interface.flush();
-        std.process.exit(1);
-    };
-
+    // Parse backend (applies globally to all bindings)
     const backend: hotkey.Backend = if (backend_str) |bs| blk: {
         if (std.mem.eql(u8, bs, "advanced")) break :blk .advanced;
         if (std.mem.eql(u8, bs, "simple")) break :blk .simple;
@@ -139,7 +119,87 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     } else .simple;
 
-    const cmd: [:0]const u8 = exec_cmd.?;
+    // Resolve config: either --key/--exec one-off, config file, or both
+    var config_contents: ?[]u8 = null;
+    defer if (config_contents) |c| allocator.free(c);
+
+    var entries: [MAX_BINDINGS]ConfigEntry = undefined;
+    var parse_errors: [MAX_BINDINGS]ParseConfigError = undefined;
+    var config_entry_count: usize = 0;
+
+    const use_config = config_path != null or (key_str == null and exec_cmd == null);
+
+    if (use_config) {
+        var path_buf: [1024]u8 = undefined;
+        const resolved_path: []const u8 = config_path orelse getDefaultConfigPath(&path_buf) orelse {
+            const stderr_file = File.stderr();
+            var buf: [512]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            try w.interface.print("Error: no config file found\n", .{});
+            try w.interface.print("Expected location: ", .{});
+            if (builtin.os.tag == .macos) {
+                try w.interface.print("~/Library/Application Support/fulton/config\n", .{});
+            } else if (builtin.os.tag == .linux) {
+                try w.interface.print("~/.config/fulton/config\n", .{});
+            } else if (builtin.os.tag == .windows) {
+                try w.interface.print("%APPDATA%\\fulton\\config\n", .{});
+            }
+            try w.interface.print("\nUse --key and --exec for one-off hotkeys, or create a config file.\n", .{});
+            try w.interface.print("Run fulton --help for usage.\n", .{});
+            try w.interface.flush();
+            std.process.exit(1);
+        };
+
+        config_contents = std.Io.Dir.cwd().readFileAlloc(io, resolved_path, allocator, .limited(1024 * 1024)) catch {
+            const stderr_file = File.stderr();
+            var buf: [512]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            if (config_path == null) {
+                // Default config path doesn't exist yet — guide the user
+                try w.interface.print("Error: no config file found\n", .{});
+                try w.interface.print("Expected location: {s}\n", .{resolved_path});
+                try w.interface.print("\nCreate a config file with one hotkey per line:\n", .{});
+                try w.interface.print("  ctrl+shift+v = open -a Schrodinger\n", .{});
+                try w.interface.print("  super+space = rofi -show drun\n", .{});
+                try w.interface.print("\nOr use --key and --exec for a one-off hotkey.\n", .{});
+            } else {
+                try w.interface.print("Error: could not read config file: {s}\n", .{resolved_path});
+            }
+            try w.interface.flush();
+            std.process.exit(1);
+        };
+
+        const result = parseConfig(config_contents.?, &entries, &parse_errors);
+        config_entry_count = result.entry_count;
+
+        if (result.error_count > 0) {
+            const stderr_file = File.stderr();
+            var buf: [1024]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            for (0..result.error_count) |ei| {
+                try w.interface.print("config:{d}: {s}\n", .{ parse_errors[ei].line_number, parse_errors[ei].message });
+            }
+            try w.interface.flush();
+            std.process.exit(1);
+        }
+
+        if (config_entry_count == 0 and key_str == null) {
+            const stderr_file = File.stderr();
+            var buf: [256]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            try w.interface.print("Error: config file contains no bindings\n", .{});
+            try w.interface.flush();
+            std.process.exit(1);
+        }
+    } else if (key_str == null or exec_cmd == null) {
+        const stderr_file = File.stderr();
+        var buf: [4096]u8 = undefined;
+        var w = stderr_file.writerStreaming(io, &buf);
+        try w.interface.print("Error: --key and --exec are required\n\n", .{});
+        try printUsage(&w.interface);
+        try w.interface.flush();
+        std.process.exit(1);
+    }
 
     const ExecContext = struct {
         command: [:0]const u8,
@@ -152,10 +212,8 @@ pub fn main(init: std.process.Init) !void {
             var ew = stderr_file.writerStreaming(ctx.io_handle, &errbuf);
 
             if (builtin.os.tag == .windows) {
-                // Windows: shell out via C runtime system()
                 _ = cSystem(ctx.command.ptr);
             } else {
-                // POSIX: fork and exec via /bin/sh -c
                 const argv = [_]?[*:0]const u8{
                     "/bin/sh",
                     "-c",
@@ -179,44 +237,73 @@ pub fn main(init: std.process.Init) !void {
         }
     };
 
-    var ctx = ExecContext{
-        .command = cmd,
-        .io_handle = io,
-    };
+    var contexts: [MAX_BINDINGS]ExecContext = undefined;
+    var context_count: usize = 0;
 
-    _ = hotkey.register(parsed.modifiers, parsed.key, &ExecContext.onHotkey, @ptrCast(&ctx), backend) catch |err| {
-        const stderr_file = File.stderr();
-        var buf: [1024]u8 = undefined;
-        var w = stderr_file.writerStreaming(io, &buf);
-        try w.interface.print("Error: failed to register hotkey\n", .{});
-        if (builtin.os.tag == .linux and err == hotkey.HotkeyError.WaylandPermissionDenied) {
-            try w.interface.print(
-                \\
-                \\On Wayland, fulton needs permission to read keyboard input.
-                \\
-                \\Option 1: Add your user to the input group (recommended):
-                \\  sudo usermod -aG input $USER
-                \\  (Log out and back in for this to take effect)
-                \\
-                \\Option 2: Run with sudo:
-                \\  sudo fulton --key "..." --exec "..."
-                \\
-                \\Run fulton --setup for more details.
-                \\
-            , .{});
-        } else if (backend == .advanced) {
-            try w.interface.print("Advanced mode requires Accessibility permission (macOS) or may be blocked by AV (Windows).\n", .{});
-        }
-        try w.interface.flush();
-        std.process.exit(1);
-    };
+    // Register bindings from config file
+    for (0..config_entry_count) |ci| {
+        const entry = entries[ci];
+        const parsed = hotkey.parseHotkeyString(entry.hotkey_str) orelse {
+            const stderr_file = File.stderr();
+            var buf: [256]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            try w.interface.print("config:{d}: invalid hotkey \"{s}\"\n", .{ entry.line_number, entry.hotkey_str });
+            try w.interface.flush();
+            std.process.exit(1);
+        };
 
+        const cmd_z = try allocator.allocSentinel(u8, entry.command.len, 0);
+        @memcpy(cmd_z[0..entry.command.len], entry.command);
+
+        contexts[context_count] = .{ .command = cmd_z, .io_handle = io };
+        _ = hotkey.register(parsed.modifiers, parsed.key, &ExecContext.onHotkey, @ptrCast(&contexts[context_count]), backend) catch |err| {
+            const stderr_file = File.stderr();
+            var buf: [512]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            try w.interface.print("config:{d}: failed to register hotkey \"{s}\"\n", .{ entry.line_number, entry.hotkey_str });
+            if (builtin.os.tag == .linux and err == hotkey.HotkeyError.WaylandPermissionDenied) {
+                try w.interface.print("Run fulton --setup for Wayland permission instructions.\n", .{});
+            }
+            try w.interface.flush();
+            std.process.exit(1);
+        };
+        context_count += 1;
+    }
+
+    // Register CLI --key/--exec binding if provided
+    if (key_str != null and exec_cmd != null) {
+        const parsed = hotkey.parseHotkeyString(key_str.?) orelse {
+            const stderr_file = File.stderr();
+            var buf: [256]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            try w.interface.print("Error: invalid hotkey string: {s}\n", .{key_str.?});
+            try w.interface.flush();
+            std.process.exit(1);
+        };
+
+        contexts[context_count] = .{ .command = exec_cmd.?, .io_handle = io };
+        _ = hotkey.register(parsed.modifiers, parsed.key, &ExecContext.onHotkey, @ptrCast(&contexts[context_count]), backend) catch |err| {
+            const stderr_file = File.stderr();
+            var buf: [512]u8 = undefined;
+            var w = stderr_file.writerStreaming(io, &buf);
+            try w.interface.print("Error: failed to register hotkey\n", .{});
+            if (builtin.os.tag == .linux and err == hotkey.HotkeyError.WaylandPermissionDenied) {
+                try w.interface.print("Run fulton --setup for Wayland permission instructions.\n", .{});
+            }
+            try w.interface.flush();
+            std.process.exit(1);
+        };
+        context_count += 1;
+    }
+
+    // Print status
     {
         const stderr_file = File.stderr();
         var buf: [512]u8 = undefined;
         var w = stderr_file.writerStreaming(io, &buf);
-        try w.interface.print("Listening for {s} (backend: {s}, Ctrl+C to stop)...\n", .{
-            key_str.?,
+        try w.interface.print("Listening for {d} hotkey{s} (backend: {s}, Ctrl+C to stop)...\n", .{
+            context_count,
+            if (context_count != 1) "s" else "",
             if (backend == .advanced) "advanced" else "simple",
         });
         try w.interface.flush();
