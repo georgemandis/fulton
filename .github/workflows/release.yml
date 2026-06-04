@@ -60,9 +60,11 @@ jobs:
           - runner: ubuntu-latest
             archive_suffix: linux-x86_64
             zig_target: x86_64-linux-gnu.2.31
+            deb_arch: amd64
           - runner: ubuntu-24.04-arm
             archive_suffix: linux-aarch64
             zig_target: aarch64-linux-gnu.2.31
+            deb_arch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -90,6 +92,35 @@ jobs:
         with:
           name: fulton-${{ matrix.archive_suffix }}
           path: ${{ env.ARCHIVE }}
+
+      - name: Package .deb
+        if: github.ref_type == 'tag'
+        run: |
+          DEB_VERSION="${{ github.ref_name }}"
+          DEB_VERSION="${DEB_VERSION#v}"
+          DEB_NAME="fulton_${DEB_VERSION}_${{ matrix.deb_arch }}"
+          mkdir -p "${DEB_NAME}/DEBIAN"
+          mkdir -p "${DEB_NAME}/usr/bin"
+          cat > "${DEB_NAME}/DEBIAN/control" <<EOF
+          Package: fulton
+          Version: ${DEB_VERSION}
+          Architecture: ${{ matrix.deb_arch }}
+          Maintainer: George Mandis <george@mand.is>
+          Description: Cross-platform global keyboard shortcut daemon
+          Homepage: https://github.com/georgemandis/fulton
+          Section: utils
+          Priority: optional
+          EOF
+          install -m 755 zig-out/bin/fulton "${DEB_NAME}/usr/bin/fulton"
+          dpkg-deb --root-owner-group --build "${DEB_NAME}"
+          echo "DEB=${DEB_NAME}.deb" >> "$GITHUB_ENV"
+
+      - name: Upload .deb artifact
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fulton-deb-${{ matrix.deb_arch }}
+          path: ${{ env.DEB }}
 
   build-windows:
     runs-on: ubuntu-latest
