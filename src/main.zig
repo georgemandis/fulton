@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const hotkey = @import("hotkey");
 
-const version = "0.3.0";
+const version = "0.3.2";
 
 // C runtime system() — used on Windows for command execution.
 // On POSIX we use fork/execve instead for non-blocking fire-and-forget.
@@ -38,6 +38,7 @@ pub fn main(init: std.process.Init) !void {
     var list_keys = false;
     var setup_requested = false;
     var config_path: ?[]const u8 = null;
+    var completions_shell: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < all_args.items.len) : (i += 1) {
@@ -77,6 +78,13 @@ pub fn main(init: std.process.Init) !void {
             setup_requested = true;
         } else if (std.mem.eql(u8, arg, "help")) {
             help_requested = true;
+        } else if (std.mem.eql(u8, arg, "completions")) {
+            if (i + 1 < all_args.items.len) {
+                i += 1;
+                completions_shell = all_args.items[i];
+            } else {
+                completions_shell = "";
+            }
         }
     }
 
@@ -103,6 +111,28 @@ pub fn main(init: std.process.Init) !void {
         var buf: [4096]u8 = undefined;
         var w = stdout_file.writerStreaming(io, &buf);
         try printSetup(&w.interface);
+        try w.interface.flush();
+        return;
+    }
+
+    if (completions_shell) |shell| {
+        const stdout_file = File.stdout();
+        var buf: [8192]u8 = undefined;
+        var w = stdout_file.writerStreaming(io, &buf);
+        if (std.mem.eql(u8, shell, "bash")) {
+            try printCompletionsBash(&w.interface);
+        } else if (std.mem.eql(u8, shell, "zsh")) {
+            try printCompletionsZsh(&w.interface);
+        } else if (std.mem.eql(u8, shell, "fish")) {
+            try printCompletionsFish(&w.interface);
+        } else {
+            const stderr_file = File.stderr();
+            var ebuf: [256]u8 = undefined;
+            var ew = stderr_file.writerStreaming(io, &ebuf);
+            try ew.interface.print("Error: unknown shell: {s}\nSupported shells: bash, zsh, fish\n", .{shell});
+            try ew.interface.flush();
+            std.process.exit(1);
+        }
         try w.interface.flush();
         return;
     }
@@ -520,6 +550,70 @@ fn printKeyList(writer: *std.Io.Writer) !void {
         \\  shift
         \\
         \\Combine with +: cmd+shift+v, ctrl+alt+f1, super+space
+        \\
+    , .{});
+}
+
+fn printCompletionsBash(writer: *std.Io.Writer) !void {
+    try writer.print(
+        \\_fulton() {{
+        \\    local cur prev
+        \\    _init_completion || return
+        \\
+        \\    case "$prev" in
+        \\        --key|-k|--exec|-e|--backend|-b|--config|-c)
+        \\            return
+        \\            ;;
+        \\    esac
+        \\
+        \\    COMPREPLY=($(compgen -W \
+        \\        '--key -k --exec -e --backend -b --config -c --list-keys --setup --version -V --help -h completions' \
+        \\        -- "$cur"))
+        \\}}
+        \\
+        \\complete -F _fulton fulton
+        \\
+    , .{});
+}
+
+fn printCompletionsZsh(writer: *std.Io.Writer) !void {
+    try writer.print(
+        \\#compdef fulton
+        \\
+        \\_fulton() {{
+        \\    _arguments \
+        \\        '(-k --key)'{{-k,--key}}'[Hotkey string (e.g. "cmd+shift+v")]:hotkey' \
+        \\        '(-e --exec)'{{-e,--exec}}'[Command to execute when hotkey fires]:command' \
+        \\        '(-b --backend)'{{-b,--backend}}'[Backend mode (simple or advanced)]:mode:(simple advanced)' \
+        \\        '(-c --config)'{{-c,--config}}'[Config file path]:file:_files' \
+        \\        '--list-keys[List all available key names]' \
+        \\        '--setup[Show platform setup instructions]' \
+        \\        '(-V --version)'{{-V,--version}}'[Show version]' \
+        \\        '(-h --help)'{{-h,--help}}'[Show help message]' \
+        \\        ':subcommand:(completions)' \
+        \\        '*::shell:(bash zsh fish)'
+        \\}}
+        \\
+        \\_fulton
+        \\
+    , .{});
+}
+
+fn printCompletionsFish(writer: *std.Io.Writer) !void {
+    try writer.print(
+        \\complete -e -c fulton
+        \\complete -c fulton -f
+        \\
+        \\complete -c fulton -s k -l key        -d 'Hotkey string (e.g. "cmd+shift+v")' -r
+        \\complete -c fulton -s e -l exec       -d 'Command to execute when hotkey fires' -r
+        \\complete -c fulton -s b -l backend    -d 'Backend mode' -r -a 'simple advanced'
+        \\complete -c fulton -s c -l config     -d 'Config file path' -r -F
+        \\complete -c fulton      -l list-keys  -d 'List all available key names'
+        \\complete -c fulton      -l setup      -d 'Show platform setup instructions'
+        \\complete -c fulton -s V -l version    -d 'Show version'
+        \\complete -c fulton -s h -l help       -d 'Show help message'
+        \\complete -c fulton -n '__fish_use_subcommand' -a completions -d 'Print shell completion script'
+        \\complete -c fulton -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish' -d 'Shell'
         \\
     , .{});
 }
